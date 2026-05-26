@@ -1,0 +1,130 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIGURACIÓN PARA DATASET: AMMARAGING SCAN PBR (50 POINTS)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dataset: AMMaraging Steel PBR Scan (50 registros)
+# Target: pbr_ph7_E-0p6 (regresión)
+# Nota: Dataset pequeño de composición de acero maraging con tasas de corrosión
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── 1. DATOS ─────────────────────────────────────────────────────────────────
+
+data:
+  real: "data/real/AMMaraging_scan_pbr_50points.csv"
+  synthetic: "None"
+  target: "pbr_ph7_E-0p6"
+  task_type: "regression"
+  real_separator: ","
+  synth_separator: "None"
+
+  schema:
+    # Composición del acero (features)
+    C: continuous
+    Si: continuous
+    Ti: continuous
+    Cu: continuous
+    Cr: continuous
+    Ni: continuous
+    Fe: continuous
+    # Tasas de corrosión (targets / outputs)
+    pbr_ph7_E-0p6: continuous
+    pbr_ph7_E-0p4: continuous
+    pbr_ph6_E-0p6: continuous
+    pbr_ph7_E1: continuous
+
+# ── 2. MÉTRICAS (solo fidelidad) ─────────────────────────────────────────────
+
+metrics:
+  # Fidelity — Global:
+  - "fidelity.correlation_matrix"
+  - "fidelity.mmd"
+  - "fidelity.energy_distance"
+  - "fidelity.outliers_coverage"
+  # Fidelity — Marginal (colas):
+  - "fidelity.ks"
+  - "fidelity.wasserstein"
+  - "fidelity.anderson_darling"
+  - "fidelity.hellinger"
+  - "fidelity.kde_ise"
+  - "fidelity.delta_exceedance"
+  # Fidelity — Marginal (escalas):
+  - "fidelity.delta_mean"
+  - "fidelity.delta_median"
+  - "fidelity.delta_iqr"
+  - "fidelity.delta_mad"
+  - "fidelity.cohens_d"
+  # Fidelity — Marginal (cobertura):
+  - "fidelity.tvd"
+  - "fidelity.js"
+  - "fidelity.kl"
+  - "fidelity.psi"
+  - "fidelity.entropy_delta"
+  - "fidelity.gini_delta"
+  # Fidelity — Condicional (num↔num):
+  - "fidelity.pearson"
+  - "fidelity.spearman"
+  - "fidelity.mi"
+
+# ── 3. REPRODUCIBILIDAD ─────────────────────────────────────────────────────
+
+reproducibility:
+  seed: 42
+
+# ── 4. CALIBRACIÓN ───────────────────────────────────────────────────────────
+
+calibration:
+  n_iterations: 5
+  sample_percentage: 100.0
+  n_jobs: 1
+  tune_aggregators: true
+
+# ── 5. EVALUACIÓN (pipeline normal con CSV sintético) ────────────────────────
+
+evaluation:
+  n_runs: 1
+
+# ── 6. BENCHMARK (comparación de generadores) ────────────────────────────────
+
+benchmark:
+  enabled: true
+  output_dir: "metis/sota_models/results/benchmark_ammaraging"
+  n_runs: 5
+  sample_ratio: 1.0
+
+  generators:
+    # Baselines
+    - name: "real_data"
+      params: {}
+    - name: "uniform_noise"
+      params: {}
+    - name: "bootstrap"
+      params: {}
+    - name: "delete_zero"
+      params:
+        deletion_rate: 0.5
+    - name: "delete_mean"
+      params:
+        deletion_rate: 0.5
+    - name: "gaussian_copula"
+      params: {}
+    # SOTA
+    - name: "bn"
+      params:
+        max_parents: 3
+    - name: "cart"
+      params:
+        max_depth: 5
+        min_samples_split: 5
+    - name: "ctgan"
+      params:
+        epochs: 500
+        batch_size: 50
+
+  statistical_test:
+    method: "friedman-nemenyi"
+    alpha: 0.05
+
+# ── 7. REPORTES ──────────────────────────────────────────────────────────────
+
+report:
+  formats: ["json", "md"]
+  output_dir: "reports/run_ammaraging"

@@ -1,0 +1,68 @@
+benchmark:
+  enabled: true
+  generators:
+  - name: dpctgan
+    params:
+      batch_size: 500
+      epochs: 300
+      epsilon: 1.0
+      sigma: 1.0
+  n_runs: 5
+  output_dir: metis/sota_models/results/benchmark_airbnb_dpctgan_only
+  sample_ratio: 1.0
+  statistical_test:
+    alpha: 0.05
+    method: friedman-nemenyi
+calibration:
+  n_iterations: 5
+  n_jobs: 1
+  sample_percentage: 100.0
+  tune_aggregators: true
+data:
+  real: data/real/airbnb_barcelona.csv
+  real_separator: ','
+  schema:
+    availability_365: continuous
+    calculated_host_listings_count: continuous
+    host_id: id
+    host_name: text
+    id: id
+    last_review: datetime
+    latitude: geospatial
+    license: text
+    longitude: geospatial
+    minimum_nights: continuous
+    name: text
+    neighbourhood: categorical
+    neighbourhood_group: categorical
+    number_of_reviews: continuous
+    number_of_reviews_ltm: continuous
+    price: continuous
+    reviews_per_month: continuous
+    room_type: categorical
+  synth_separator: None
+  synthetic: None
+  target: price
+  task_type: regression
+evaluation:
+  n_runs: 1
+metrics:
+- fidelity.global
+- fidelity.marginal.tails
+- fidelity.marginal.scales
+- fidelity.marginal.coverage
+- fidelity.conditional
+- utility.tts
+- utility.tstr
+- utility.trts
+- utility.ttrs
+- privacy.dataset_based.attribute_inference
+- privacy.dataset_based.reidentification
+- privacy.dataset_based.empirical_similarity
+report:
+  formats:
+  - json
+  - md
+  output_dir: reports/run_airbnb
+reproducibility:
+  seed: 42

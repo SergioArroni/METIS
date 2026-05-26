@@ -1,0 +1,35 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      # Linter - arregla automáticamente lo que puede
+      - id: ruff
+        args: [--fix, --exit-zero] # --exit-zero no bloquea el commit
+        files: ^(metis|tests|scripts|examples)/
+      # Formatter - formatea automáticamente
+      - id: ruff-format
+        args: [--line-length=100]
+        files: ^(metis|tests|scripts|examples)/
+
+  - repo: local
+    hooks:
+      # Verifica imports con isort integrado en ruff
+      - id: ruff-isort
+        name: ruff-isort
+        entry: ruff check --select I --fix --exit-zero
+        language: python
+        additional_dependencies: [ruff==0.8.0]
+        types: [python]
+        files: ^(metis|tests|scripts|examples)/
+        pass_filenames: true
+
+      # Tests unitarios - no bloquea commit si falla
+      - id: pytest-check
+        name: pytest-check
+        entry: python
+        language: system
+        args: [scripts/pytest_check.py]
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+        verbose: true

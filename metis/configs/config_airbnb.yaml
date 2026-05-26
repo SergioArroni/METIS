@@ -1,0 +1,142 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIGURACIÓN PARA DATASET: AIRBNB BARCELONA
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dataset: Airbnb Barcelona (~19,410 registros)
+# Target: price (regresión)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── 1. DATOS ─────────────────────────────────────────────────────────────────
+
+data:
+  real: "data/real/airbnb_barcelona.csv"
+  synthetic: "None"
+  target: "price"
+  task_type: "regression"
+  real_separator: ","
+  synth_separator: "None"
+
+  schema:
+    # Identificadores
+    id: id
+    host_id: id
+    # Texto (alta cardinalidad)
+    name: text
+    host_name: text
+    license: text
+    # Geográficas
+    neighbourhood_group: categorical
+    neighbourhood: categorical
+    latitude: geospatial
+    longitude: geospatial
+    # Tipo de alojamiento
+    room_type: categorical
+    # Target
+    price: continuous
+    # Restricciones
+    minimum_nights: continuous
+    # Reseñas
+    number_of_reviews: continuous
+    reviews_per_month: continuous
+    number_of_reviews_ltm: continuous
+    last_review: datetime
+    # Actividad del host
+    calculated_host_listings_count: continuous
+    # Disponibilidad
+    availability_365: continuous
+
+# ── 2. MÉTRICAS (compartidas por pipeline, calibración y benchmark) ──────────
+
+metrics:
+  # Fidelity via shortcuts (categoria/subcategoria)
+  - "fidelity.global"
+  - "fidelity.marginal.tails"
+  - "fidelity.marginal.scales"
+  - "fidelity.marginal.coverage"
+  - "fidelity.conditional"
+  # Utility:
+  - "utility.tts"
+  - "utility.tstr"
+  - "utility.trts"
+  - "utility.ttrs"
+  # Privacy via subcategory shortcuts:
+  - "privacy.dataset_based.attribute_inference"
+  - "privacy.dataset_based.reidentification"
+  - "privacy.dataset_based.empirical_similarity"
+
+# ── 3. REPRODUCIBILIDAD ─────────────────────────────────────────────────────
+
+reproducibility:
+  seed: 42
+
+# ── 4. CALIBRACIÓN (opcional) ────────────────────────────────────────────────
+
+calibration:
+  n_iterations: 5
+  sample_percentage: 100.0
+  n_jobs: 1
+  tune_aggregators: true
+
+# ── 5. EVALUACIÓN (pipeline normal con CSV sintético) ────────────────────────
+
+evaluation:
+  n_runs: 1
+
+# ── 6. BENCHMARK (opcional — comparación de generadores) ─────────────────────
+
+benchmark:
+  enabled: true
+  output_dir: "metis/sota_models/results/benchmark_airbnb"
+  n_runs: 5
+  sample_ratio: 1.0
+
+  generators:
+    # Baselines
+    - name: "real_data"
+      params: {}
+    - name: "uniform_noise"
+      params: {}
+    - name: "bootstrap"
+      params: {}
+    - name: "smotenc"
+      params:
+        k_neighbors: 5
+    - name: "delete_zero"
+      params:
+        deletion_rate: 0.5
+    - name: "delete_mean"
+      params:
+        deletion_rate: 0.5
+    - name: "gaussian_copula"
+      params: {}
+    # SOTA
+    - name: "bn"
+      params:
+        max_parents: 3
+    - name: "cart"
+      params:
+        max_depth: 10
+        min_samples_split: 10
+    - name: "ctgan"
+      params:
+        epochs: 300
+        batch_size: 500
+    - name: "tvae"
+      params:
+        epochs: 300
+        batch_size: 500
+    - name: "dpctgan"
+      params:
+        epsilon: 1.0
+        epochs: 300
+        batch_size: 500
+        sigma: 1.0
+
+  statistical_test:
+    method: "friedman-nemenyi"
+    alpha: 0.05
+
+# ── 7. REPORTES ──────────────────────────────────────────────────────────────
+
+report:
+  formats: ["json", "md"]
+  output_dir: "reports/run_airbnb"

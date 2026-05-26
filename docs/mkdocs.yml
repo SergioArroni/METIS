@@ -1,0 +1,85 @@
+site_name: METIS
+site_url: https://SergioArroni.github.io/METIS/
+site_description: A modular framework for evaluating synthetic tabular data quality, utility, and privacy preservation
+site_author: Sergio Arroni
+
+repo_name: SergioArroni/METIS
+repo_url: https://github.com/SergioArroni/METIS
+
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - minify:
+      minify_html: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quick Start: getting-started/quickstart.md
+      - Configuration: getting-started/configuration.md
+  - Guides:
+      - Evaluate: guides/evaluate.md
+      - Calibrate: guides/calibrate.md
+      - Benchmark: guides/benchmark.md
+      - Extending METIS: guides/extending.md
+  - Reference:
+      - All Metrics (48): reference/metrics.md
+      - CLI: reference/cli.md
+      - Python SDK: reference/sdk.md
+      - YAML Schema: reference/configuration.md
+  - Concepts:
+      - Architecture: concepts/architecture.md
+      - Calibration: concepts/calibration.md
+      - Normalization: concepts/normalization.md
+      - Metric Taxonomy: concepts/taxonomy.md
+  - Changelog: changelog.md
