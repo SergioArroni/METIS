@@ -90,7 +90,7 @@ jobs:
       - name: Create virtual environment and install dependencies
         run: |
           uv venv
-          uv pip install -e .[ci]
+          uv pip install -e .[ci,ml]
 
       - name: Run unit tests with coverage
         id: unit_tests
