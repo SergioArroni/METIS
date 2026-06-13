@@ -188,8 +188,10 @@ class NumCatMetrics:
                     normalized_value=1.0 - min(delta, 1.0),
                     is_valid=True,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger(__name__).debug(
+                "eta_squared skipped for (%s, %s): %s", num_col, cat_col, e
+            )
 
     def _compute_kruskal_epsilon(
         self,
@@ -222,5 +224,7 @@ class NumCatMetrics:
                     normalized_value=1.0 - min(delta, 1.0),
                     is_valid=True,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger(__name__).debug(
+                "kruskal_epsilon skipped for (%s, %s): %s", num_col, cat_col, e
+            )

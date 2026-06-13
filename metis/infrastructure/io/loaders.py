@@ -166,8 +166,8 @@ def get_file_info(file_path: str) -> dict[str, Any]:
                         "dtypes": {col: str(dtype) for col, dtype in sample.dtypes.items()},
                     }
                 )
-            except Exception:
-                info["error"] = "Could not read CSV sample"
+            except Exception as e:
+                info["error"] = f"Could not read CSV sample: {e}"
 
         return info
 

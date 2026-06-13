@@ -76,8 +76,10 @@ def calculate_multi_run_statistics(run_results: list[dict[str, Any]]) -> dict[st
                 # Only include mode if it appears more than once
                 if mode_result.count[0] > 1:
                     stats_dict["mode"] = float(mode_result.mode[0])
-            except Exception:
-                pass  # Skip mode if calculation fails
+            except Exception as e:
+                import logging
+
+                logging.getLogger(__name__).debug("Mode calculation skipped for %s: %s", key, e)
 
         statistics[key] = stats_dict
 

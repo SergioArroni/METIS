@@ -64,12 +64,18 @@ All metrics are normalized to **[0, 1]** using empirical bounds (real-vs-real as
 pip install metis-val
 ```
 
+To include **utility metrics** (TSTR, TRTS, ML Efficiency — require CatBoost, XGBoost, LightGBM, Optuna):
+
+```bash
+pip install "metis-val[ml]"
+```
+
 ### From source (development)
 
 ```bash
 git clone https://github.com/SergioArroni/METIS.git
 cd METIS
-pip install -e ".[dev]"
+pip install -e ".[dev,ml]"
 ```
 
 Verify:
@@ -378,7 +384,7 @@ metis/
 | `fidelity.kl` | Kullback-Leibler divergence |
 | `fidelity.psi` | Population Stability Index |
 | `fidelity.entropy_delta` | Entropy difference |
-| `fidelity.gini_delta` | Gini impurity difference |
+| `fidelity.gini_delta` | Gini coefficient difference |
 
 </details>
 

@@ -201,7 +201,8 @@ class AggregatorTuner:
             try:
                 upper_scores = [float(agg_func(list(vals.values()))) for vals in upper_iters]
                 lower_scores = [float(agg_func(list(vals.values()))) for vals in lower_iters]
-            except Exception:
+            except Exception as e:
+                self.logger.debug("Aggregator %s skipped (family tuning): %s", agg_name, e)
                 continue
 
             upper_mean = float(np.mean(upper_scores))
@@ -289,7 +290,8 @@ class AggregatorTuner:
                     float(comp_func([lower_family_scores[f][i] for f in families]))
                     for i in range(n_lower)
                 ]
-            except Exception:
+            except Exception as e:
+                self.logger.debug("Aggregator %s skipped (composite tuning): %s", comp_name, e)
                 continue
 
             upper_mean = float(np.mean(upper_composites))
@@ -413,13 +415,15 @@ class AggregatorTuner:
             try:
                 upper_agg = agg_func(upper_values)
                 upper_error = (upper_agg - target_upper) ** 2
-            except Exception:
+            except Exception as e:
+                self.logger.debug("Aggregator %s upper error failed: %s", agg_name, e)
                 upper_error = float("inf")
 
             try:
                 lower_agg = agg_func(lower_values)
                 lower_error = (lower_agg - target_lower) ** 2
-            except Exception:
+            except Exception as e:
+                self.logger.debug("Aggregator %s lower error failed: %s", agg_name, e)
                 lower_error = float("inf")
 
             total_error = upper_error + lower_error

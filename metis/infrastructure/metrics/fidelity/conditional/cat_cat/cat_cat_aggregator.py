@@ -186,8 +186,8 @@ class CatCatMetrics:
                 normalized_value=1.0 - min(delta, 1.0),
                 is_valid=True,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger(__name__).debug("cramers_v skipped for (%s, %s): %s", c1, c2, e)
 
     def _compute_theils_u_result(
         self,
@@ -211,8 +211,8 @@ class CatCatMetrics:
                 normalized_value=1.0 - min(delta, 1.0),
                 is_valid=True,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger(__name__).debug("theils_u skipped for (%s, %s): %s", c1, c2, e)
 
     def _compute_chi2_stat(
         self,
@@ -238,5 +238,5 @@ class CatCatMetrics:
                 normalized_value=1.0 - min(delta, 1.0),
                 is_valid=True,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger(__name__).debug("chi2_stat skipped for (%s, %s): %s", c1, c2, e)

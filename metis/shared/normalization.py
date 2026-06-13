@@ -318,7 +318,7 @@ def get_normalizer(metric_id: str) -> Callable[[float, dict | None], float]:
         return NORMALIZATION_FUNCTIONS[norm_type]
 
     # Try without prefix
-    short_id = metric_id.split(".")[-1] if "." in metric_id else metric_id
+    short_id = metric_id.rsplit(".", maxsplit=1)[-1] if "." in metric_id else metric_id
     for full_id, norm_type in METRIC_NORMALIZATION_MAP.items():
         if full_id.endswith(f".{short_id}"):
             return NORMALIZATION_FUNCTIONS[norm_type]

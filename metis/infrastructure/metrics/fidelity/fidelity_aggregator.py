@@ -181,7 +181,8 @@ class FidelityAggregator:
                 corr_score = 1.0 - min(corr_diff / max_diff, 1.0)
 
                 details["correlation_matrix"] = corr_score
-        except Exception:
+        except Exception as e:
+            self.logger.warning("correlation_matrix fallback to 1.0: %s", e)
             details["correlation_matrix"] = 1.0
 
         # Overall score

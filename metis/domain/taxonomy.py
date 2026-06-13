@@ -189,7 +189,7 @@ def get_metric_hierarchy(metric_id: str) -> dict[str, str]:
 
     # Fallback: try to infer from metric_id prefix
     if "." in metric_id:
-        family = metric_id.split(".")[0]
+        family = metric_id.split(".", maxsplit=1)[0]
         if family in FAMILIES:
             return {"family": family, "category": "unknown", "subcategory": None}
 

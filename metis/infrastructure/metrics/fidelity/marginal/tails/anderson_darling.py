@@ -42,6 +42,8 @@ class AndersonDarlingMetric(TailMetric):
                 warnings.filterwarnings("ignore", message="p-value")
                 result = anderson_ksamp([real_col.values, synth_col.values], variant="log-normal")
             return float(result.statistic)
-        except Exception:
-            # Fallback for edge cases (e.g., identical values)
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).debug("anderson_darling fallback for edge case: %s", e)
             return 0.0

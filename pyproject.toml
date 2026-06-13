@@ -6,10 +6,10 @@ build-backend = "hatchling.build"
 name = "metis-val"
 dynamic = ["version"]
 description = "A modular framework for evaluating synthetic tabular data quality, utility, and privacy preservation"
-readme = "README.md"
+readme = { file = "README.md", content-type = "text/markdown" }
 license = "MIT"
 requires-python = ">=3.12"
-authors = [{ name = "Sergio Arroni", email = "sergio.arroni@example.com" }]
+authors = [{ name = "Sergio Arroni", email = "sergio.arroni@thenextpangea.com" }]
 keywords = [
     "synthetic-data",
     "data-quality",
@@ -19,7 +19,7 @@ keywords = [
     "tabular-data",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
@@ -46,7 +46,6 @@ dependencies = [
     "matplotlib>=3.10.0",
     "seaborn>=0.13.2",
     "torch>=2.9.1",
-    "optuna>=3.4.0",
     "smartnoise-synth>=1.0.6",
 ]
 
@@ -60,7 +59,7 @@ dev = [
     "hypothesis>=6.0.0",
 ]
 ci = ["pytest>=9.0.2", "pytest-cov>=7.0.0", "ruff>=0.14.10", "hypothesis>=6.0.0"]
-ml = ["catboost>=1.2.8", "xgboost>=3.1.2", "lightgbm>=4.6.0"]
+ml = ["catboost>=1.2.8", "xgboost>=3.1.2", "lightgbm>=4.6.0", "optuna>=3.4.0"]
 docs = ["mkdocs-material>=9.0", "mkdocs-minify-plugin>=0.7"]
 all = ["metis-val[dev,ml]"]
 
@@ -131,6 +130,8 @@ ignore = [
     "PLR0915", # too many statements
     "ERA001",  # commented code (permitir comentarios)
     "SIM108",  # use ternary operator (puede reducir legibilidad)
+    "PLC0415", # import-outside-top-level (intentional: lazy optional deps, circular-import guards)
+    "UP046",   # non-pep695-generic-class (PEP 695 generics are more disruptive to adopt wholesale)
 ]
 # Autofix seguro
 fixable = ["ALL"]

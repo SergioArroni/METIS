@@ -237,6 +237,7 @@ class MetricCalibrator:
         self.bounds.set_metadata("tune_aggregators", tune_aggregators)
         self.bounds.set_metadata("dataset_rows", len(real_data))
         self.bounds.set_metadata("dataset_columns", len(real_data.columns))
+        self.bounds.set_metadata("dataset_shape", list(real_data.shape))
 
         # -------------------------------------------------------
         # Store per-metric values for full traceability

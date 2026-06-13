@@ -169,8 +169,17 @@ def _register_default_metrics():
     )
     from .privacy.mechanism_based import differential_privacy
 
-    # Utility metrics
-    from .utility.ml_efficiency import classification_efficiency, regression_efficiency
+    # Utility metrics — require the optional [ml] extra (catboost, optuna)
+    try:
+        from .utility.ml_efficiency import classification_efficiency, regression_efficiency
+
+        _ = classification_efficiency, regression_efficiency
+    except ImportError:
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "Utility metrics (ml_efficiency) not registered: install metis-val[ml] to enable them."
+        )
 
     # Suppress unused import warnings - imports trigger decorator registration
     _ = (
@@ -222,9 +231,6 @@ def _register_default_metrics():
         dcr,
         nnaa,
         differential_privacy,
-        # Utility
-        classification_efficiency,
-        regression_efficiency,
     )
 
 

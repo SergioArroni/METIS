@@ -73,7 +73,7 @@ class DataValidator:
     def _check_min_rows(df: pd.DataFrame, label: str, minimum: int = 10) -> None:
         if len(df) < minimum:
             raise SchemaError(
-                f"{label.capitalize()} data must have at least {minimum} rows " f"(got {len(df)})"
+                f"{label.capitalize()} data must have at least {minimum} rows (got {len(df)})"
             )
 
     @staticmethod

@@ -80,7 +80,7 @@ class MetricEvaluator:
             self._logger.warning(
                 "Metric %s failed: %s — will be excluded from aggregation", metric_id, exc
             )
-            family = metric_id.split(".")[0] if "." in metric_id else "fidelity"
+            family = metric_id.split(".", maxsplit=1)[0] if "." in metric_id else "fidelity"
             return MetricResult(
                 id=metric_id,
                 value=float("nan"),

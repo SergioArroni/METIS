@@ -503,8 +503,8 @@ class Aggregator:
                     calibrated_aggregates[score_key] = calibrated_score
                     calibrated_aggregates[f"{family}_score_raw"] = raw_score
                     calibrated_family_scores[family] = calibrated_score
-                except Exception:
-                    # If calibration fails, keep raw score
+                except Exception as e:
+                    self.logger.warning("Calibration normalization failed for %s: %s", family, e)
                     calibrated_aggregates[score_key] = raw_score
                     calibrated_family_scores[family] = raw_score
 
