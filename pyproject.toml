@@ -9,7 +9,7 @@ description = "A modular framework for evaluating synthetic tabular data quality
 readme = { file = "README.md", content-type = "text/markdown" }
 license = "MIT"
 requires-python = ">=3.12"
-authors = [{ name = "Sergio Arroni", email = "sergio.arroni@thenextpangea.com" }]
+authors = [{ name = "Sergio Arroni", email = "sergioarroni@outlook.com" }]
 keywords = [
     "synthetic-data",
     "data-quality",
