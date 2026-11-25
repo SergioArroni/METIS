@@ -58,7 +58,6 @@ dev = [
 ]
 ci = ["pytest>=9.2.0", "pytest-cov>=7.1.0", "ruff>=0.17.5"]
 ml = ["catboost>=1.2.10", "xgboost>=3.4.1", "lightgbm>=4.7.0"]
-diffusion = ["synthcity>=0.2.12"]
 docs = ["mkdocs-material>=9.0", "mkdocs-minify-plugin>=0.7"]
 all = ["metis-val[dev,ml]"]
 
