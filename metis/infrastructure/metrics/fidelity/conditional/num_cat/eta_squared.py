@@ -38,10 +38,18 @@ class EtaSquaredMetric(NumCatPairMetric):
 
     def _compute_eta_squared(self, groups: list[np.ndarray]) -> float:
         """
-        Compute eta-squared (effect size) from grouped data.
+        Compute the effect size from grouped data, bias-corrected (omega²).
 
-        Eta-squared represents the proportion of total variance that is
-        explained by group membership (SS_between / SS_total).
+        Eta-squared, ``SS_between / SS_total``, is the proportion of variance
+        explained by group membership, but it is biased upwards by about
+        ``(k − 1) / (N − 1)``: groups drawn from one population still explain
+        some variance by chance, more with fewer rows.  Omega-squared (Hays
+        1963) removes that expected share::
+
+            ω² = (SS_between − (k − 1)·MS_within) / (SS_total + MS_within)
+
+        clipped to [0, 1].  It is ≈ 0 for unrelated columns at any N and
+        ≈ eta² when N is large.
 
         Args:
             groups: list of numpy arrays, one per group
@@ -53,7 +61,12 @@ class EtaSquaredMetric(NumCatPairMetric):
         grand_mean = all_vals.mean()
         ss_total = np.sum((all_vals - grand_mean) ** 2)
         ss_between = sum(len(g) * (g.mean() - grand_mean) ** 2 for g in groups)
-        return float(ss_between / ss_total) if ss_total > 0 else 0.0
+        k, n = len(groups), len(all_vals)
+        if ss_total <= 0 or n <= k:
+            return 0.0
+        ms_within = (ss_total - ss_between) / (n - k)
+        omega = (ss_between - (k - 1) * ms_within) / (ss_total + ms_within)
+        return float(min(1.0, max(0.0, omega)))
 
     def _compute_pair(
         self,
@@ -75,11 +88,9 @@ class EtaSquaredMetric(NumCatPairMetric):
             tuple of (real_eta_squared, synth_eta_squared)
         """
         # Build groups for real data
-        real_df = pd.DataFrame({"num": real_col1, "cat": real_col2})
-        synth_df = pd.DataFrame({"num": synth_col1, "cat": synth_col2})
 
-        real_groups = [g["num"].values for _, g in real_df.groupby("cat") if len(g) > 1]
-        synth_groups = [g["num"].values for _, g in synth_df.groupby("cat") if len(g) > 1]
+        real_groups = self._groups(real_col1, real_col2)
+        synth_groups = self._groups(synth_col1, synth_col2)
 
         if len(real_groups) < 2 or len(synth_groups) < 2:
             raise ValueError("Need at least 2 groups with >1 element each")

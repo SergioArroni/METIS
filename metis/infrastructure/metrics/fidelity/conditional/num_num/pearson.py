@@ -40,9 +40,26 @@ class PearsonCorrelationMetric(NumNumPairMetric):
         synth_col2: pd.Series,
     ) -> tuple[float, float]:
         """Compute Pearson correlation for a column pair."""
+        corr = getattr(self, "_corr_matrices", None)
+        if corr is not None:
+            # ``DataFrame.corr`` uses pairwise-complete rows, exactly the rows
+            # the pair loop hands over, so the lookup equals the per-pair call.
+            real_corr, synth_corr = corr
+            c1, c2 = real_col1.name, real_col2.name
+            return float(real_corr.at[c1, c2]), float(synth_corr.at[c1, c2])
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            real_val = abs(stats.pearsonr(real_col1.values, real_col2.values)[0])
-            synth_val = abs(stats.pearsonr(synth_col1.values, synth_col2.values)[0])
+            real_val = float(stats.pearsonr(real_col1.values, real_col2.values)[0])
+            synth_val = float(stats.pearsonr(synth_col1.values, synth_col2.values)[0])
 
         return real_val, synth_val
+
+    def _prepare_pairs(self) -> None:
+        """One ``DataFrame.corr`` per table instead of one scipy call per pair."""
+        cols = sorted({c for pair in self._pairs for c in pair})
+        self._corr_matrices = None
+        if cols:
+            self._corr_matrices = (
+                self._real_data[cols].corr(method="pearson"),
+                self._synth_data[cols].corr(method="pearson"),
+            )

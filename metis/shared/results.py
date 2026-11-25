@@ -54,7 +54,7 @@ class ColumnMetricResult:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ColumnMetricResult":
+    def from_dict(cls, data: dict[str, Any]) -> ColumnMetricResult:
         """
         Create from dictionary.
 
@@ -73,7 +73,7 @@ class ColumnMetricResult:
         )
 
     @classmethod
-    def invalid(cls, column: str, error: str) -> "ColumnMetricResult":
+    def invalid(cls, column: str, error: str) -> ColumnMetricResult:
         """
         Create an invalid result with error message.
 

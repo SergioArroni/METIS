@@ -33,7 +33,7 @@ jobs:
           version: "latest"
 
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install 3.14
 
       - name: Run Ruff linter (non-blocking)
         id: ruff_check
@@ -85,7 +85,7 @@ jobs:
           version: "latest"
 
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install 3.14
 
       - name: Create virtual environment and install dependencies
         run: |
@@ -166,7 +166,7 @@ jobs:
           version: "latest"
 
       - name: Set up Python
-        run: uv python install 3.12.8
+        run: uv python install 3.14
 
       - name: Create virtual environment
         run: uv venv

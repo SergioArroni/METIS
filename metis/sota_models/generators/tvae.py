@@ -6,11 +6,12 @@ import numpy as np
 import pandas as pd
 
 from .base import BaseGenerator
-from .gan_utils import DEFAULT_HIGH_CARDINALITY_THRESHOLD, filter_high_cardinality
+from .gan_utils import DEFAULT_HIGH_CARDINALITY_THRESHOLD, collapse_high_cardinality
 
 try:
-    from sdv.metadata import SingleTableMetadata
     from sdv.single_table import TVAESynthesizer
+
+    from . import _sdv
 
     SDV_AVAILABLE = True
 except ImportError:
@@ -25,9 +26,10 @@ class TVAEGenerator(BaseGenerator):
     with mixed variable types, as described in *Modeling Tabular Data
     using Conditional GAN* (Xu et al., NeurIPS 2019).
 
-    High-cardinality categorical columns (>100 unique values by default) are
-    automatically excluded during training to prevent OOM, then filled from
-    the real-data distribution after generation.
+    High-cardinality categorical columns (>100 unique values by default) keep
+    their 100 most frequent categories and map the rest to ``OTHER`` before
+    training (one-hot stays small), and are generated jointly with the rest.
+    They are never refilled with real values.
 
     Requires: sdv (Synthetic Data Vault)
     """
@@ -66,35 +68,31 @@ class TVAEGenerator(BaseGenerator):
         self._ordinal_columns = ordinal_columns or {}
         self._continuous_columns = continuous_columns or []
 
-        # Filter high-cardinality categoricals to prevent OOM
-        train_data, kept_cat_cols, self._dropped_cols = filter_high_cardinality(
+        # High-cardinality categoricals: top-k + OTHER, modelled jointly (see
+        # ``collapse_high_cardinality``; they used to be refilled with real values).
+        train_data, self._collapsed_cols = collapse_high_cardinality(
             real_data.copy(),
             self._categorical_columns,
             threshold=self.high_cardinality_threshold,
         )
+        kept_cat_cols = list(self._categorical_columns)
+        self._dropped_cols: list[str] = []
         ordinal_kept = {
             k: v for k, v in self._ordinal_columns.items() if k not in self._dropped_cols
         }
 
         # Create metadata
-        metadata = SingleTableMetadata()
-        metadata.detect_from_dataframe(train_data)
-
-        for col in kept_cat_cols:
-            if col in train_data.columns:
-                metadata.update_column(col, sdtype="categorical")
-        for col in ordinal_kept:
-            if col in train_data.columns:
-                metadata.update_column(col, sdtype="categorical")
-        for col in self._continuous_columns:
-            if col in train_data.columns:
-                metadata.update_column(col, sdtype="numerical")
+        metadata = _sdv.metadata_for(
+            train_data,
+            categorical=list(kept_cat_cols) + list(ordinal_kept),
+            numerical=self._continuous_columns,
+        )
 
         self._model = TVAESynthesizer(
             metadata=metadata,
             epochs=self.epochs,
             batch_size=self.batch_size,
-            cuda=False,
+            enable_gpu=False,
         )
 
         if self.random_state is not None:
@@ -108,7 +106,7 @@ class TVAEGenerator(BaseGenerator):
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            self._model.fit(train_data)
+            _sdv.fit(self._model, train_data)
 
         self._is_fitted = True
 
@@ -126,17 +124,7 @@ class TVAEGenerator(BaseGenerator):
             except ImportError:
                 pass
 
-        synthetic = self._model.sample(num_rows=n_samples)
-
-        # Re-fill dropped high-cardinality columns from real distribution
-        if self._dropped_cols:
-            for col in self._dropped_cols:
-                if col in self._real_data.columns:
-                    synthetic[col] = (
-                        self._real_data[col]
-                        .sample(n=n_samples, replace=True, random_state=self.random_state)
-                        .values
-                    )
+        synthetic = _sdv.sample(self._model, n_samples)
 
         # Ensure column order matches original data
         final_cols = [c for c in self._all_columns if c in synthetic.columns]

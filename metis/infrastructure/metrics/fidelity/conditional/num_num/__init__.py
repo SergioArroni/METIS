@@ -6,18 +6,19 @@ Computes correlation metrics between pairs of numeric columns:
 - Spearman correlation (rank-based)
 - Distance correlation (dCor) - captures non-linear dependencies
 - Mutual information (MI) - information-theoretic measure
+- Correlation matrix - the whole matrix of numeric correlations
 """
 
+from .correlation_matrix import CorrelationMatrixMetric
 from .dcor import DistanceCorrelationMetric
 from .mi import MutualInformationMetric
-from .num_num_aggregator import NumNumMetrics
 from .pearson import PearsonCorrelationMetric
 from .spearman import SpearmanCorrelationMetric
 
 __all__ = [
-    "NumNumMetrics",
     "PearsonCorrelationMetric",
     "SpearmanCorrelationMetric",
     "DistanceCorrelationMetric",
     "MutualInformationMetric",
+    "CorrelationMatrixMetric",
 ]

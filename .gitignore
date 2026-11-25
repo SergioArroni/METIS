@@ -176,7 +176,7 @@ pyrightconfig.json
 # End of https://www.toptal.com/developers/gitignore/api/python
 
 *.csv
-!data/real/*.csv
+!benchmark/models/*.csv
 catboost_info/
 my_validation_results/
 metis/sota_models/tmp/

@@ -36,8 +36,8 @@ class DataValidator:
 
         self._check_not_empty(real.full, "real")
         self._check_not_empty(synth.full, "synth")
-        self._check_no_nans(real.full, "real")
-        self._check_no_nans(synth.full, "synth")
+        # Missing values are legitimate input: the preprocessing keeps them and
+        # every metric uses the values it has (see ``preprocessor``).
         self._check_min_rows(real.full, "real")
         self._check_min_rows(synth.full, "synth")
         self._check_schema_compat(real.full, synth.full)
@@ -46,10 +46,17 @@ class DataValidator:
         if spec.target:
             self._check_target(real.full, synth.full, spec)
 
-        # Utility metrics require a target column
+        # Without ``data.target`` only the utility metrics are impossible: they
+        # are reported as NaN with ``details.error`` by the evaluator, and
+        # fidelity / privacy still run.
         utility_ids = [m for m in plan.metric_ids if m.startswith("utility.")]
         if utility_ids and not spec.target:
-            raise SchemaError("Target column must be specified for utility metrics")
+            msg = (
+                f"No 'data.target' in config: utility metrics {utility_ids} will be NaN "
+                "(set 'data.target' to evaluate them)."
+            )
+            self._logger.warning(msg)
+            warnings.append(msg)
 
         return warnings
 
@@ -59,15 +66,6 @@ class DataValidator:
     def _check_not_empty(df: pd.DataFrame, label: str) -> None:
         if df.empty or len(df.columns) == 0:
             raise SchemaError(f"{label.capitalize()} data cannot be empty")
-
-    @staticmethod
-    def _check_no_nans(df: pd.DataFrame, label: str) -> None:
-        nan_cols = [c for c in df.columns if df[c].isna().any()]
-        if nan_cols:
-            raise SchemaError(
-                f"{label.capitalize()} data still contains NaN values "
-                f"after preprocessing in columns: {nan_cols}"
-            )
 
     @staticmethod
     def _check_min_rows(df: pd.DataFrame, label: str, minimum: int = 10) -> None:
@@ -99,15 +97,29 @@ class DataValidator:
             raise SchemaError(f"Extra columns in synthetic data: {extra}")
 
     @staticmethod
-    def _check_target(real: pd.DataFrame, synth: pd.DataFrame, spec: "DatasetSpec") -> None:
+    def resolve_target_column(target: str, columns) -> str | None:
+        """Column that carries *target* after casting.
+
+        A datetime column becomes ``<name>__ts`` and an ordinal one keeps
+        ``<name>`` (categorical) plus ``<name>__ord``; the target is found
+        under any of those names.
+        """
+        for candidate in (target, f"{target}__ts", f"{target}__ord"):
+            if candidate in columns:
+                return candidate
+        return None
+
+    @classmethod
+    def _check_target(cls, real: pd.DataFrame, synth: pd.DataFrame, spec: DatasetSpec) -> None:
         for target in spec.target_list:
             for label, df in [("real", real), ("synth", synth)]:
-                if target not in df.columns:
+                column = cls.resolve_target_column(target, df.columns)
+                if column is None:
                     raise SchemaError(
-                        f"Target column '{target}' not found in {label} data",
+                        f"Target column '{target}' (data.target) not found in {label} data",
                         column=target,
                     )
-                non_null = df[target].notna().sum()
+                non_null = df[column].notna().sum()
                 if non_null < 10:
                     raise SchemaError(
                         f"Target '{target}' has too few non-null values in {label} data: {non_null}",

@@ -1,156 +1,114 @@
-"""Tests for metis.calibrate.optimization.aggregator_tuner — aggregator selection.
-
-WHY: The tuner picks which aggregation function (mean, median, SSD, etc.) best
-represents theoretical calibration bounds. A bad choice means the composite
-score doesn't properly penalize imbalanced family performance.
-
-Critical bug this protects against: the "Airbnb failure mode" where a
-degenerate composite aggregator ignores a collapsed family (e.g. gmean with
-a zero component → composite = 0 regardless of other families).
-"""
-
-import numpy as np
-import pytest
-
 from metis.calibrate.optimization.aggregator_tuner import AggregatorTuner
-from metis.shared.aggregation_registry import AGGREGATION_FUNCTIONS
-
-# =============================================================================
-# Degenerate composite detection
-# =============================================================================
+from metis.infrastructure.metrics.aggregation.stochastic_dominance import DEFAULT_RISK_AVERSION
 
 
-class TestIsDegenerateCompositeAggregator:
-    """Risk: degenerate aggregators mask family failures in the composite."""
-
-    def test_geometric_mean_is_degenerate(self):
-        """gmean([1,1,0]) = 0 → one family at 0 kills the composite."""
-        fn = AGGREGATION_FUNCTIONS["geometric_mean"]
-        assert AggregatorTuner.is_degenerate_composite_aggregator(fn) is True
-
-    def test_min_is_degenerate(self):
-        """min([1,1,0]) = 0, min([0,0,1]) = 0 → both extremes collapse."""
-        fn = AGGREGATION_FUNCTIONS["min"]
-        assert AggregatorTuner.is_degenerate_composite_aggregator(fn) is True
-
-    def test_max_is_degenerate(self):
-        """max([1,1,0]) = 1 → ignores the collapsed family."""
-        fn = AGGREGATION_FUNCTIONS["max"]
-        assert AggregatorTuner.is_degenerate_composite_aggregator(fn) is True
-
-    def test_mean_is_not_degenerate(self):
-        fn = AGGREGATION_FUNCTIONS["mean"]
-        assert AggregatorTuner.is_degenerate_composite_aggregator(fn) is False
-
-    def test_median_is_not_degenerate(self):
-        fn = AGGREGATION_FUNCTIONS["median"]
-        # median([1,1,0])=1.0 — actually this IS degenerate (endpoint)
-        # Let's just check it returns a boolean
-        result = AggregatorTuner.is_degenerate_composite_aggregator(fn)
-        assert isinstance(result, bool)
-
-    def test_ssd_is_not_degenerate(self):
-        """SSD should properly penalize imbalanced vectors."""
-        fn = AGGREGATION_FUNCTIONS["ssd"]
-        assert AggregatorTuner.is_degenerate_composite_aggregator(fn) is False
+def _iterations(value: float, n: int = 5) -> list[dict[str, float]]:
+    return [{"metric": value} for _ in range(n)]
 
 
-# =============================================================================
-# tune_from_metrics — per-family optimisation
-# =============================================================================
+def test_composite_tuning_rejects_degenerate_median_on_mixed_extremes() -> None:
+    tuner = AggregatorTuner()
+
+    upper_metric_data = {
+        "fidelity": _iterations(1.0),
+        "utility": _iterations(1.0),
+        "privacy": _iterations(0.0),
+    }
+    lower_metric_data = {
+        "fidelity": _iterations(0.0),
+        "utility": _iterations(0.0),
+        "privacy": _iterations(1.0),
+    }
+
+    results = tuner.tune_from_metrics(upper_metric_data, lower_metric_data)
+    composite_name = results["optimal"]["composite"]
+    composite_func = tuner.aggregation_functions[composite_name]
+
+    assert composite_name != "median"
+    assert 0.0 < composite_func([1.0, 1.0, 0.0]) < 1.0
+    assert 0.0 < composite_func([0.0, 0.0, 1.0]) < 1.0
 
 
-class TestTuneFromMetrics:
-    """Integration test for the full tuning loop."""
+# ── Calibration uses the evaluation's hierarchy (review, coordinator item 1) ──
 
-    @pytest.fixture
-    def synthetic_calibration_data(self):
-        """Generate synthetic calibration data where upper > lower clearly."""
-        rng = np.random.default_rng(42)
-        families = ["fidelity", "privacy", "utility"]
-
-        upper_data = {}
-        lower_data = {}
-
-        for family in families:
-            # Upper bound iterations: 5 iterations, 4 metrics each, values ~0.8
-            upper_iters = []
-            for _ in range(5):
-                metrics = {f"{family}.m{i}": float(rng.uniform(0.7, 0.95)) for i in range(4)}
-                upper_iters.append(metrics)
-            upper_data[family] = upper_iters
-
-            # Lower bound iterations: values ~0.3
-            lower_iters = []
-            for _ in range(5):
-                metrics = {f"{family}.m{i}": float(rng.uniform(0.1, 0.4)) for i in range(4)}
-                lower_iters.append(metrics)
-            lower_data[family] = lower_iters
-
-        return upper_data, lower_data
-
-    def test_returns_optimal_config(self, synthetic_calibration_data):
-        upper, lower = synthetic_calibration_data
-        tuner = AggregatorTuner()
-        result = tuner.tune_from_metrics(upper, lower)
-
-        assert "optimal" in result
-        optimal = result["optimal"]
-        # Should have per-family and composite
-        assert "fidelity" in optimal
-        assert "privacy" in optimal
-        assert "utility" in optimal
-        assert "composite" in optimal
-
-    def test_selects_valid_aggregator_names(self, synthetic_calibration_data):
-        upper, lower = synthetic_calibration_data
-        tuner = AggregatorTuner()
-        result = tuner.tune_from_metrics(upper, lower)
-
-        for family in ["fidelity", "privacy", "utility"]:
-            assert result["optimal"][family] in tuner.available_aggregators
-
-    def test_composite_is_non_degenerate(self, synthetic_calibration_data):
-        upper, lower = synthetic_calibration_data
-        tuner = AggregatorTuner()
-        result = tuner.tune_from_metrics(upper, lower)
-
-        composite_name = result["optimal"]["composite"]
-        composite_fn = AGGREGATION_FUNCTIONS[composite_name]
-        assert not AggregatorTuner.is_degenerate_composite_aggregator(composite_fn)
-
-    def test_handles_single_metric(self):
-        """Edge case: only 1 metric per family per iteration."""
-        tuner = AggregatorTuner()
-        upper = {"fidelity": [{"fidelity.ks": 0.9}] * 3}
-        lower = {"fidelity": [{"fidelity.ks": 0.2}] * 3}
-        result = tuner.tune_from_metrics(upper, lower)
-        assert "fidelity" in result["optimal"]
+# 3 marginal metrics (2 subcategories), 1 global: flat and hierarchical differ
+_UPPER_ITER = {
+    "fidelity.ks": 0.9,
+    "fidelity.wasserstein": 0.9,
+    "fidelity.tvd": 0.9,
+    "fidelity.mmd": 0.3,
+}
 
 
-# =============================================================================
-# reaggregate — apply selected aggregators to raw data
-# =============================================================================
+def _evaluation_family_score(values, agg_name, weights=None, risk_aversion=DEFAULT_RISK_AVERSION):
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from metis.application.aggregator import Aggregator
+    from metis.domain.entities import EvalPlan, MetricResult
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "a.json"
+        path.write_text(json.dumps({"optimal": {"fidelity": agg_name, "composite": "mean"}}))
+        agg = Aggregator(risk_aversion=risk_aversion, optimal_aggregators_path=str(path))
+    results = [
+        MetricResult(id=k, value=v, details={}, family="fidelity") for k, v in values.items()
+    ]
+    return agg.aggregate(results, EvalPlan(metric_ids=list(values)), weights)["fidelity_score"]
 
 
-class TestReaggregate:
-    def test_basic(self):
-        metric_data = {
-            "fidelity": [
-                {"fidelity.ks": 0.8, "fidelity.wasserstein": 0.7},
-                {"fidelity.ks": 0.85, "fidelity.wasserstein": 0.75},
-            ],
-        }
-        config = {"fidelity": "mean", "composite": "mean"}
-        result = AggregatorTuner.reaggregate(metric_data, config)
+def test_reaggregate_matches_the_hierarchical_evaluation() -> None:
+    import pytest
 
-        assert "fidelity" in result
-        assert len(result["fidelity"]) == 2
-        # First iteration: mean(0.8, 0.7) = 0.75
-        assert result["fidelity"][0] == pytest.approx(0.75)
-        # Second iteration: mean(0.85, 0.75) = 0.80
-        assert result["fidelity"][1] == pytest.approx(0.80)
+    for name in ("mean", "median", "ssd"):
+        (score,) = AggregatorTuner.reaggregate({"fidelity": [_UPPER_ITER]}, {"fidelity": name})[
+            "fidelity"
+        ]
+        assert score == pytest.approx(_evaluation_family_score(_UPPER_ITER, name))
+    # the flat mean (0.75) is not what the evaluation computes (mean of 0.9, 0.3)
+    (flat_was,) = AggregatorTuner.reaggregate({"fidelity": [_UPPER_ITER]}, {"fidelity": "mean"})[
+        "fidelity"
+    ]
+    assert flat_was == pytest.approx(0.6)
 
-    def test_empty_data(self):
-        result = AggregatorTuner.reaggregate({}, {"fidelity": "mean"})
-        assert result == {}
+
+def test_reaggregate_uses_the_configured_weights() -> None:
+    import pytest
+
+    from metis.calibrate.optimization.aggregator_tuner import HierarchicalScorer
+
+    cfg = {"aggregation": {"weights": {"fidelity.global": 0, "utility": 0}, "risk_aversion": 3}}
+    scorer = HierarchicalScorer.from_config(cfg)
+    (score,) = AggregatorTuner.reaggregate(
+        {"fidelity": [_UPPER_ITER]}, {"fidelity": "ssd"}, scorer
+    )["fidelity"]
+    expected = _evaluation_family_score(
+        _UPPER_ITER, "ssd", weights={"fidelity.global": 0}, risk_aversion=3
+    )
+    assert score == pytest.approx(expected)
+    assert score == pytest.approx(0.9)  # only the marginal category is left
+
+
+def test_fidelity_aggregator_cannot_win_by_reversing_the_references() -> None:
+    tuner = AggregatorTuner()
+    upper = _iterations(0.1)  # real-vs-real scored *below* noise
+    lower = _iterations(0.9)
+    _, fid_error = tuner._pick_best_family_aggregator(upper, lower, "fidelity")
+    _, priv_error = tuner._pick_best_family_aggregator(upper, lower, "privacy")
+    assert fid_error > 1.0  # before: min(normal, inverted) gave ~0.02
+    assert priv_error < 0.05  # privacy keeps the orientation-agnostic error
+
+
+def test_candidate_aggregators_are_distinct_functions() -> None:
+    import itertools
+
+    import numpy as np
+
+    tuner = AggregatorTuner()
+    assert "fsd" not in tuner.available_aggregators  # fsd is the mean: it could never win
+    rng = np.random.default_rng(0)
+    vectors = [list(rng.uniform(size=n)) for n in (3, 7, 12, 25)]
+    for a, b in itertools.combinations(tuner.available_aggregators, 2):
+        fa, fb = tuner.aggregation_functions[a], tuner.aggregation_functions[b]
+        assert any(abs(fa(v) - fb(v)) > 1e-9 for v in vectors), (a, b)

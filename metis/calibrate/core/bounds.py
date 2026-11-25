@@ -1,8 +1,39 @@
 """
-Calibration bounds storage and loading.
+Per-metric calibration bounds: storage, normalisation and loading.
 
-Stores empirical upper and lower bounds for family-level scores (fidelity, privacy, utility)
-to normalize scores between worst-case (uniform noise) and best-case (real vs real).
+Every calibrated metric gets its own pair of empirical anchors, measured over
+``n`` iterations (study ``calib_v2``, 2026-10-09, approved by the author):
+
+* **fidelity** — upper: real rows the generator never saw (a third of the
+  table) against its training third; lower: uniform noise.
+* **privacy** — upper: the same unseen real third; lower: an exact copy of
+  the training third.  Both measured *with* the holdout third, as the
+  evaluation is (without it the copy and the noise both score ≈1 and the
+  bounds come out inverted).
+* **utility** — not calibrated: its absolute scale ``(TSTR − T)/(TTR − T)``
+  already anchors 0 (no signal) and 1 (as useful as the real table).  The
+  calibration only decides, once per real table, whether the target has
+  signal measurable at its size (``utility_signal``,
+  ``metis.calibrate.core.utility_signal``); every evaluation with these
+  bounds uses that decision and, on tables of the size of a third, its
+  anchors, instead of its own five half-samples.
+
+A metric score ``s`` is calibrated as ``clip((s − l) / (u − l), 0, 1)`` and
+then aggregated through the normal hierarchy.  ``l``/``u`` are the one-sided
+95 % quantiles of the iterations towards each other (``mean_l + z·sd_l``,
+``mean_u − z·sd_u``; ``metis.shared.anchors``): an unseen real sample scores
+1 and noise 0, instead of scattering around them and averaging below 1 and
+above 0 once clipped (benchmark of 2026-10-10).  A metric whose range
+(between the means) is below ``NOISE_MULTIPLE`` times its noise (the
+iterations' standard deviations combined, ``sqrt(sd_l² + sd_u²)``) cannot
+tell its anchors apart: it is excluded from the aggregation instead of
+amplifying noise.  The factor 5 is
+the criterion of the study (``calib_v2``): with a range of five noise units
+the two anchors' iteration clouds do not overlap, so the rescaling reflects
+the metric and not the sampling noise of its anchors.
+
+Calibration is per metric only, never per family or category: one method for
+the whole of METIS.
 """
 
 import json
@@ -14,295 +45,200 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from metis.shared.anchors import ANCHOR_Z, NOISE_MULTIPLE, WARNING_SD_FLOOR
+
 logger = logging.getLogger(__name__)
+
+# Version of the file layout.  Format 2 (anchors at the means) is rebuilt on
+# load from its stored iterations; older family-level files are rejected.
+BOUNDS_FORMAT = 3
+_MIGRATABLE_FORMATS = (2,)
+
+# Reference descriptions stored with the bounds.
+REFERENCES: dict[str, dict[str, str]] = {
+    "fidelity": {
+        "upper": "unseen real third vs the generator's training third (holdout given)",
+        "lower": "uniform noise vs the training third (holdout given)",
+    },
+    "privacy": {
+        "upper": "unseen real third vs the generator's training third (holdout given)",
+        "lower": "exact copy of the training third (holdout given)",
+    },
+}
+# Families that are calibrated.  Utility is excluded on purpose (module docstring).
+CALIBRATED_FAMILIES: tuple[str, ...] = tuple(REFERENCES)
+
+
+def _summary(values: list[float]) -> tuple[float, float]:
+    """``(mean, sd)`` of finite *values*; sd is 0 with fewer than two."""
+    finite = np.asarray([v for v in values if np.isfinite(v)], dtype=float)
+    if finite.size == 0:
+        return float("nan"), float("nan")
+    sd = float(np.std(finite, ddof=1)) if finite.size > 1 else 0.0
+    return float(np.mean(finite)), sd
 
 
 class CalibrationBounds:
-    """
-    Storage for calibrated family-level metric bounds.
-
-    Stores upper bounds (real vs real) and lower bounds (real vs noise)
-    for each metric family (fidelity, privacy, utility).
-    """
+    """Per-metric calibration bounds (see the module docstring)."""
 
     def __init__(self):
         """Initialize empty bounds storage."""
         self.bounds: dict[str, dict[str, Any]] = {}
         self.metadata: dict[str, Any] = {}
+        # Kept for callers that read it: per-metric calibration fixes the
+        # anchors itself, so no aggregation function is tuned any more.
         self.optimal_aggregators: dict[str, Any] | None = None
-        self.metric_details: dict[str, Any] | None = None
+        # Whether the real table has signal for the utility metrics (None:
+        # not measured, each evaluation decides on its own).
+        self.utility_signal: dict[str, Any] | None = None
 
     def set_bounds(
         self,
-        family: str,
-        lower_bound: float,
-        upper_bound: float,
+        metric_id: str,
+        lower_bound: float | None = None,
+        upper_bound: float | None = None,
         lower_iterations: list[float] | None = None,
         upper_iterations: list[float] | None = None,
-        inverted: bool = False,
+        *,
+        family: str | None = None,
+        reference_lower: str | None = None,
+        reference_upper: str | None = None,
     ) -> None:
+        """Store the anchors of *metric_id*.
+
+        With iterations the anchors are their one-sided quantiles towards
+        each other (``lower_bound`` and ``upper_bound`` are then ignored) and
+        the noise is ``sqrt(sd_lower² + sd_upper²)``.  Without iterations the
+        given bounds are used with zero noise.
         """
-        set bounds for a specific metric family.
+        lower_iterations = [float(x) for x in lower_iterations or []]
+        upper_iterations = [float(x) for x in upper_iterations or []]
+        if lower_iterations:
+            lower, lower_sd = _summary(lower_iterations)
+        else:
+            lower, lower_sd = float(lower_bound), 0.0
+        if upper_iterations:
+            upper, upper_sd = _summary(upper_iterations)
+        else:
+            upper, upper_sd = float(upper_bound), 0.0
+        if family is None:
+            from metis.domain.taxonomy import get_metric_hierarchy
 
-        Args:
-            family: Family name ("fidelity", "privacy", "utility")
-            lower_bound: Lower bound (worst-case scenario)
-            upper_bound: Upper bound (best-case scenario)
-            lower_iterations: All lower bound iteration values
-            upper_iterations: All upper bound iteration values
-            inverted: If True, the aggregator produces scores with inverted
-                semantics (lower raw = better).  Normalization will flip the
-                result so that 1 still means "best".
+            family = get_metric_hierarchy(metric_id)["family"]
 
-        Note:
-            The caller (MetricCalibrator) is responsible for ensuring that
-            lower_bound <= upper_bound by swapping iteration labels when needed
-            (e.g., for privacy metrics with inverted calibration semantics).
-        """
-        # Validate bounds are in correct order
-        if upper_bound < lower_bound:
-            import warnings
-
-            warnings.warn(
-                f"\n{'=' * 80}\n"
-                f"ERROR: INVALID BOUNDS FOR {family.upper()}!\n"
-                f"{'=' * 80}\n"
-                f"Upper bound ({upper_bound:.4f}) < Lower bound ({lower_bound:.4f})\n"
-                f"This should have been handled by the calibrator.\n"
-                f"Bounds will be stored as-is but normalization will fail.\n"
-                f"{'=' * 80}\n",
-                category=RuntimeWarning,
-                stacklevel=2,
+        noise = float(np.hypot(lower_sd, upper_sd))
+        span = upper - lower
+        lower_mean, upper_mean = lower, upper
+        if not (np.isfinite(lower) and np.isfinite(upper)):
+            calibratable, reason = False, "excluded: a reference has no finite value"
+        elif span <= 0:
+            calibratable, reason = (
+                False,
+                f"excluded: upper reference ({upper:.4f}) not above the lower one ({lower:.4f})",
             )
+        elif span < NOISE_MULTIPLE * noise:
+            calibratable, reason = (
+                False,
+                f"excluded: range < {NOISE_MULTIPLE:g}×noise (range {span:.4f}, noise {noise:.4f})",
+            )
+        else:
+            calibratable, reason = True, None
+            lower = lower_mean + ANCHOR_Z * lower_sd
+            upper = upper_mean - ANCHOR_Z * upper_sd
 
-        self.bounds[family] = {
-            "lower": float(lower_bound),
-            "upper": float(upper_bound),
-            "lower_iterations": [float(x) for x in lower_iterations] if lower_iterations else [],
-            "upper_iterations": [float(x) for x in upper_iterations] if upper_iterations else [],
-            "inverted": inverted,
+        self.bounds[metric_id] = {
+            "family": family,
+            "lower": lower,
+            "upper": upper,
+            "lower_mean": lower_mean,
+            "upper_mean": upper_mean,
+            "lower_sd": lower_sd,
+            "upper_sd": upper_sd,
+            "noise": noise,
+            "n_lower": len(lower_iterations),
+            "n_upper": len(upper_iterations),
+            "lower_iterations": lower_iterations,
+            "upper_iterations": upper_iterations,
+            "reference_lower": reference_lower,
+            "reference_upper": reference_upper,
+            "calibratable": calibratable,
+            "reason": reason,
         }
 
-    def get_bounds(self, family: str) -> tuple[float, float]:
-        """
-        Get bounds tuple for a specific family.
-
-        Args:
-            family: Family name
-
-        Returns:
-            tuple of (lower_bound, upper_bound)
-
-        Raises:
-            KeyError: If family not found
-        """
-        if family not in self.bounds:
-            raise KeyError(f"Family '{family}' not found in calibration bounds")
-
-        data = self.bounds[family]
+    def get_bounds(self, metric_id: str) -> tuple[float, float]:
+        """``(lower, upper)`` anchors of *metric_id*."""
+        if metric_id not in self.bounds:
+            raise KeyError(f"Metric '{metric_id}' not found in calibration bounds")
+        data = self.bounds[metric_id]
         return (data["lower"], data["upper"])
 
+    def is_calibratable(self, metric_id: str) -> bool:
+        return bool(self.bounds.get(metric_id, {}).get("calibratable", False))
+
+    def exclusion_reason(self, metric_id: str) -> str | None:
+        return self.bounds.get(metric_id, {}).get("reason")
+
+    def get_all_metrics(self) -> list[str]:
+        return sorted(self.bounds)
+
     def get_all_families(self) -> list[str]:
+        """Families with at least one calibrated metric."""
+        return sorted({b["family"] for b in self.bounds.values()})
+
+    def normalize_with_bounds(self, metric_id: str, raw_value: float) -> float:
+        """``clip((raw − lower) / (upper − lower), 0, 1)``; NaN stays NaN.
+
+        Raises ``KeyError`` for an unknown metric and ``ValueError`` for one
+        excluded from calibration (see ``is_calibratable``).
         """
-        Get list of all families with calibrated bounds.
+        if metric_id not in self.bounds:
+            raise KeyError(f"No calibration bounds for metric '{metric_id}'")
+        if not np.isfinite(raw_value):
+            return float("nan")
+        entry = self.bounds[metric_id]
+        if not entry["calibratable"]:
+            raise ValueError(f"{metric_id}: {entry['reason']}")
+        lower, upper = entry["lower"], entry["upper"]
+        return float(np.clip((raw_value - lower) / (upper - lower), 0.0, 1.0))
 
-        Returns:
-            list of family names
+    def deviation_from_real(self, metric_id: str, raw_value: float) -> float | None:
+        """How many standard deviations of another real sample *raw_value* falls below it.
+
+        ``(upper_mean − raw) / max(upper_sd, WARNING_SD_FLOOR)``: the upper
+        reference is the unseen real sample, so a value above ``WARNING_Z``
+        is a metric worse than real sampling noise explains.  ``None`` for an
+        unknown or excluded metric, a non-finite value or an entry without
+        iterations of its upper reference.
         """
-        return list(self.bounds.keys())
-
-    def normalize_with_bounds(self, family: str, raw_value: float) -> float:
-        """
-        Normalize a raw family score using calibrated bounds.
-
-        Formula: (value - lower) / (upper - lower), clipped to [0, 1]
-        When the aggregator has inverted semantics (lower raw = better),
-        the result is flipped: 1 - normalized.
-
-        Args:
-            family: Family name ("fidelity", "privacy", "utility")
-            raw_value: Raw family score to normalize
-
-        Returns:
-            Normalized value in [0, 1] where 1 = best
-        """
-        if family not in self.bounds:
-            raise ValueError(
-                f"No calibration bounds found for family '{family}'. "
-                f"Available families: {list(self.bounds.keys())}"
-            )
-
-        bounds = self.bounds[family]
-        lower = bounds["lower"]
-        upper = bounds["upper"]
-        inverted = bounds.get("inverted", False)
-
-        # Handle edge case where bounds are identical
-        if abs(upper - lower) < 1e-10:
-            return 1.0 if raw_value >= upper else 0.0
-
-        # Normalize and clip
-        normalized = (raw_value - lower) / (upper - lower)
-        normalized = float(np.clip(normalized, 0.0, 1.0))
-
-        # When the aggregator inverts score semantics (e.g. SSD on some
-        # datasets produces lower scores for better fidelity), flip so
-        # that 1 still means "best quality".
-        if inverted:
-            normalized = 1.0 - normalized
-
-        return normalized
+        entry = self.bounds.get(metric_id)
+        if not entry or not entry.get("calibratable") or not np.isfinite(raw_value):
+            return None
+        if not entry.get("n_upper") or entry.get("upper_mean") is None:
+            return None
+        sd = max(float(entry.get("upper_sd") or 0.0), WARNING_SD_FLOOR)
+        return float((entry["upper_mean"] - raw_value) / sd)
 
     def save(self, filepath: str) -> None:
-        """
-        Save bounds to JSON file.
-
-        Args:
-            filepath: Path to output JSON file
-        """
+        """Save bounds to JSON file."""
         path = Path(filepath)
         path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Add timestamp to metadata
         self.metadata["saved_at"] = datetime.now().isoformat()
-
-        # Ensure critical metadata is present (for cache validation)
         if "data_fingerprint" not in self.metadata:
             logger.warning(
                 "Saving calibration bounds without data_fingerprint. "
                 "Cache validation will not work properly."
             )
-
-        data = {
-            "bounds": self.bounds,
-            "metadata": self.metadata,
-        }
-        if self.optimal_aggregators:
-            data["optimal_aggregators"] = self.optimal_aggregators
-        if self.metric_details:
-            data["metric_details"] = self.metric_details
-
         with path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-
-    @staticmethod
-    def _metric_details_to_tuner_input(
-        metric_details: dict[str, Any] | None,
-    ) -> tuple[dict[str, list[dict[str, float]]], dict[str, list[dict[str, float]]]]:
-        """Reconstruct tuner inputs from persisted metric details."""
-        upper_metric_data: dict[str, list[dict[str, float]]] = {}
-        lower_metric_data: dict[str, list[dict[str, float]]] = {}
-
-        if not isinstance(metric_details, dict):
-            return upper_metric_data, lower_metric_data
-
-        def _extract_iterations(iterations: Any) -> list[dict[str, float]]:
-            extracted: list[dict[str, float]] = []
-            if not isinstance(iterations, list):
-                return extracted
-
-            for iteration_payload in iterations:
-                if not isinstance(iteration_payload, dict):
-                    continue
-
-                values: dict[str, float] = {}
-                for metric_id, payload in iteration_payload.items():
-                    if metric_id == "iteration":
-                        continue
-
-                    normalized_value = (
-                        payload.get("normalized") if isinstance(payload, dict) else payload
-                    )
-                    if normalized_value is None:
-                        continue
-
-                    try:
-                        value = float(normalized_value)
-                    except (TypeError, ValueError):
-                        continue
-
-                    if np.isfinite(value):
-                        values[metric_id] = value
-
-                if values:
-                    extracted.append(values)
-
-            return extracted
-
-        for family, family_details in metric_details.items():
-            if not isinstance(family_details, dict):
-                continue
-
-            upper_iterations = _extract_iterations(family_details.get("upper_iterations"))
-            lower_iterations = _extract_iterations(family_details.get("lower_iterations"))
-
-            if upper_iterations and lower_iterations:
-                upper_metric_data[family] = upper_iterations
-                lower_metric_data[family] = lower_iterations
-
-        return upper_metric_data, lower_metric_data
-
-    def _refresh_optimal_aggregators_from_metric_details(self) -> None:
-        """Refresh stale cached aggregators when persisted L4 is degenerate."""
-        if not isinstance(self.optimal_aggregators, dict) or not self.metric_details:
-            return
-
-        composite_name = self.optimal_aggregators.get("composite")
-        if not isinstance(composite_name, str):
-            return
-
-        from metis.calibrate.optimization.aggregator_tuner import AggregatorTuner
-
-        tuner = AggregatorTuner(logger=logger)
-        composite_func = tuner.aggregation_functions.get(composite_name)
-        if composite_func is None:
-            return
-
-        if not tuner.is_degenerate_composite_aggregator(composite_func):
-            return
-
-        upper_metric_data, lower_metric_data = self._metric_details_to_tuner_input(
-            self.metric_details
-        )
-        if not upper_metric_data or not lower_metric_data:
-            logger.warning(
-                "Cached composite aggregator '%s' is degenerate but metric_details could not be reconstructed",
-                composite_name,
-            )
-            return
-
-        refreshed = tuner.tune_from_metrics(upper_metric_data, lower_metric_data).get("optimal")
-        if not isinstance(refreshed, dict):
-            return
-
-        refreshed_composite = refreshed.get("composite")
-        if refreshed_composite == composite_name:
-            return
-
-        logger.info(
-            "Refreshing cached composite aggregator from %s to %s using persisted metric details",
-            composite_name,
-            refreshed_composite,
-        )
-        self.optimal_aggregators = refreshed
-        self.metadata["optimal_aggregators_refreshed"] = True
-        self.metadata["optimal_aggregators_refreshed_from"] = composite_name
-        self.metadata["optimal_aggregators_refreshed_to"] = refreshed_composite
+            json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
-    def load(cls, filepath: str) -> "CalibrationBounds":
-        """
-        Load bounds from JSON file.
+    def load(cls, filepath: str) -> CalibrationBounds:
+        """Load bounds from a JSON file written by :meth:`save`.
 
-        Args:
-            filepath: Path to JSON file
-
-        Returns:
-            CalibrationBounds instance
-
-        Raises:
-            FileNotFoundError: If file doesn't exist
-            ValueError: If file format is invalid
+        Format-2 files (anchors at the iteration means) are rebuilt from their
+        stored iterations.  Raises ``ValueError`` for files of the old
+        family-level layout: their anchors were measured differently (no
+        holdout, noise as the worst privacy case) and cannot be reused.
         """
         path = Path(filepath)
         if not path.exists():
@@ -310,41 +246,57 @@ class CalibrationBounds:
                 f"Calibration file not found: {filepath}\n"
                 f"You must run calibration first: python -m metis calibrate ..."
             )
-
         with path.open(encoding="utf-8") as f:
             data = json.load(f)
-
         if not isinstance(data, dict):
             raise ValueError(
                 f"Calibration file {filepath!s} must contain a JSON object at the "
                 f"top level, got {type(data).__name__}."
             )
-        bounds = data.get("bounds", {})
-        if not isinstance(bounds, dict):
+        if data.get("format") in _MIGRATABLE_FORMATS:
+            return cls._rebuilt(data)
+        if data.get("format") != BOUNDS_FORMAT:
             raise ValueError(
-                f"Calibration file {filepath!s}: 'bounds' must be a JSON object, "
-                f"got {type(bounds).__name__}."
+                f"Calibration file {filepath!s} has the old family-level layout "
+                f"(format {data.get('format')!r}, expected {BOUNDS_FORMAT}); "
+                "re-run the calibration."
             )
-        for family, fam_bounds in bounds.items():
-            if not isinstance(fam_bounds, dict):
+        bounds = data.get("bounds", {})
+        if not isinstance(bounds, dict) or not bounds:
+            raise ValueError(f"Calibration file {filepath!s} contains no bounds; re-run it.")
+        required = {"family", "lower", "upper", "calibratable"}
+        for metric_id, entry in bounds.items():
+            if not isinstance(entry, dict) or not required <= set(entry):
                 raise ValueError(
-                    f"Calibration file {filepath!s}: bounds[{family!r}] must be "
-                    f"a JSON object of metric→bounds, got {type(fam_bounds).__name__}."
+                    f"Calibration file {filepath!s}: bounds[{metric_id!r}] must hold "
+                    f"{sorted(required)}"
                 )
-
         instance = cls()
         instance.bounds = bounds
         instance.metadata = data.get("metadata", {}) or {}
-        instance.optimal_aggregators = data.get("optimal_aggregators")
-        instance.metric_details = data.get("metric_details")
-        instance._refresh_optimal_aggregators_from_metric_details()
+        instance.utility_signal = data.get("utility_signal")
+        return instance
 
-        # Validate that at least one family has bounds
-        if not instance.bounds:
-            raise ValueError(
-                "Calibration file contains no bounds data.\nPlease re-run calibration."
+    @classmethod
+    def _rebuilt(cls, data: dict[str, Any]) -> CalibrationBounds:
+        """Bounds of a format-2 file, anchors recomputed from its iterations."""
+        instance = cls()
+        for metric_id, entry in (data.get("bounds") or {}).items():
+            instance.set_bounds(
+                metric_id,
+                lower_bound=entry.get("lower"),
+                upper_bound=entry.get("upper"),
+                lower_iterations=entry.get("lower_iterations"),
+                upper_iterations=entry.get("upper_iterations"),
+                family=entry.get("family"),
+                reference_lower=entry.get("reference_lower"),
+                reference_upper=entry.get("reference_upper"),
             )
-
+        if not instance.bounds:
+            raise ValueError("Calibration file contains no bounds; re-run it.")
+        instance.metadata = dict(data.get("metadata") or {})
+        instance.metadata["rebuilt_from_format"] = data.get("format")
+        instance.utility_signal = data.get("utility_signal")
         return instance
 
     def set_metadata(self, key: str, value: Any) -> None:
@@ -352,136 +304,91 @@ class CalibrationBounds:
         self.metadata[key] = value
 
     def get_metadata(self, key: str, default: Any = None) -> Any:
-        """
-        Get metadata field with optional default.
-
-        Args:
-            key: Metadata key
-            default: Default value if key not found
-
-        Returns:
-            Metadata value or default
-        """
+        """Metadata field, or *default*."""
         return self.metadata.get(key, default)
 
     def validate_against(self, data: pd.DataFrame, config_path: str | None = None) -> bool:
-        """
-        Validate if these bounds are valid for given data and config.
-
-        Checks:
-        1. Data fingerprint match (if data provided)
-        2. Config fingerprint match (if config_path provided)
-        3. Data shape match (basic sanity check)
-
-        Args:
-            data: DataFrame to validate against
-            config_path: Path to config YAML to validate against
-
-        Returns:
-            True if bounds are valid for this data/config, False otherwise
-
-        Examples:
-            >>> bounds = CalibrationBounds.load("bounds.json")
-            >>> is_valid = bounds.validate_against(my_data, "config.yaml")
-            >>> if not is_valid:
-            ...     print("Need to recalibrate!")
-        """
-        # Check if metadata has fingerprints
+        """True if these bounds were calibrated on *data* (and *config_path*)."""
         stored_data_fp = self.get_metadata("data_fingerprint")
         stored_config_fp = self.get_metadata("config_fingerprint")
-
         if not stored_data_fp:
             logger.warning(
                 "Calibration bounds missing data_fingerprint. Cannot validate - assume invalid."
             )
             return False
 
-        # Validate data fingerprint
         from metis.calibrate.cache.fingerprint import compute_data_fingerprint
 
         current_data_fp = compute_data_fingerprint(data)
         if current_data_fp != stored_data_fp:
             logger.warning(
-                f"Data fingerprint mismatch:\n"
-                f"  Stored:  {stored_data_fp[:16]}...\n"
-                f"  Current: {current_data_fp[:16]}..."
+                "Data fingerprint mismatch:\n  Stored:  %s...\n  Current: %s...",
+                stored_data_fp[:16],
+                current_data_fp[:16],
             )
             return False
-
-        # Validate config fingerprint if provided
         if config_path and stored_config_fp:
             from metis.calibrate.cache.fingerprint import compute_config_fingerprint
 
             current_config_fp = compute_config_fingerprint(config_path)
             if current_config_fp != stored_config_fp:
                 logger.warning(
-                    f"Config fingerprint mismatch:\n"
-                    f"  Stored:  {stored_config_fp}\n"
-                    f"  Current: {current_config_fp}"
+                    "Config fingerprint mismatch:\n  Stored:  %s\n  Current: %s",
+                    stored_config_fp,
+                    current_config_fp,
                 )
                 return False
-
-        # Basic sanity check: shape
         stored_shape = self.get_metadata("dataset_shape")
         if stored_shape and list(data.shape) != stored_shape:
             logger.warning(
-                f"Dataset shape mismatch:\n  Stored:  {stored_shape}\n  Current: {list(data.shape)}"
+                "Dataset shape mismatch:\n  Stored:  %s\n  Current: %s",
+                stored_shape,
+                list(data.shape),
             )
             return False
-
         logger.info("Calibration bounds validated successfully")
         return True
 
     def get_summary(self) -> str:
-        """
-        Get human-readable summary of bounds.
-
-        Returns:
-            Formatted string summary
-        """
-        lines = ["=" * 60, "CALIBRATION BOUNDS SUMMARY", "=" * 60]
-
-        for family in ["fidelity", "privacy", "utility"]:
-            if family in self.bounds:
-                b = self.bounds[family]
-                lines.append(f"\n{family.upper()}:")
-                lines.append(f"  Lower bound (real vs noise): {b['lower']:.4f}")
-                lines.append(f"  Upper bound (real vs real):  {b['upper']:.4f}")
-                lines.append(f"  Range: [{b['lower']:.4f}, {b['upper']:.4f}]")
-                if b.get("lower_iterations"):
-                    lines.append(f"  Iterations: {len(b['lower_iterations'])}")
-
-        if self.optimal_aggregators:
-            lines.append("\nOPTIMAL AGGREGATORS:")
-            for key, value in self.optimal_aggregators.items():
-                lines.append(f"  {key}: {value}")
-
+        """Human-readable summary, one line per metric."""
+        lines = ["=" * 60, "CALIBRATION BOUNDS (per metric)", "=" * 60]
+        for family in self.get_all_families():
+            lines.append(f"\n{family.upper()}:")
+            for metric_id in self.get_all_metrics():
+                b = self.bounds[metric_id]
+                if b["family"] != family:
+                    continue
+                status = "ok" if b["calibratable"] else b["reason"]
+                lines.append(
+                    f"  {metric_id}: [{b['lower']:.4f} ± {b['lower_sd']:.4f}, "
+                    f"{b['upper']:.4f} ± {b['upper_sd']:.4f}] {status}"
+                )
+        if self.utility_signal is not None:
+            u = self.utility_signal
+            lines.append(
+                f"\nUTILITY SIGNAL: {'applicable' if u['applicable'] else 'not applicable'} "
+                f"(TTR gain {u['ttr_gain']:.4f}, threshold {u['threshold']:.4f}, "
+                f"{u['n_half_samples']} half-samples)"
+            )
         lines.append("\nMetadata:")
         for key, value in self.metadata.items():
             lines.append(f"  {key}: {value}")
-
         lines.append("=" * 60)
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
-        d = {
-            "bounds": self.bounds,
-            "metadata": self.metadata,
-        }
-        if self.optimal_aggregators:
-            d["optimal_aggregators"] = self.optimal_aggregators
-        if self.metric_details:
-            d["metric_details"] = self.metric_details
-        return d
+        data = {"format": BOUNDS_FORMAT, "bounds": self.bounds, "metadata": self.metadata}
+        if self.utility_signal is not None:
+            data["utility_signal"] = self.utility_signal
+        return data
 
     def __len__(self) -> int:
-        """Return number of families with bounds."""
+        """Number of metrics with bounds."""
         return len(self.bounds)
 
-    def __contains__(self, family: str) -> bool:
-        """Check if family has bounds."""
-        return family in self.bounds
+    def __contains__(self, metric_id: str) -> bool:
+        return metric_id in self.bounds
 
     def __repr__(self) -> str:
-        return f"CalibrationBounds(families={list(self.bounds.keys())})"
+        return f"CalibrationBounds(metrics={len(self.bounds)}, families={self.get_all_families()})"

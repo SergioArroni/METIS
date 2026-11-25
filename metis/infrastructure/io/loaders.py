@@ -54,8 +54,22 @@ def load_csv(file_path: str, **kwargs) -> pd.DataFrame:
         raise SchemaError(f"CSV file is empty: {file_path}") from e
     except pd.errors.ParserError as e:
         raise SchemaError(f"Failed to parse CSV file {file_path}: {e}") from e
+    except SchemaError:
+        raise
     except Exception as e:
         raise SchemaError(f"Failed to load CSV file {file_path}: {e}") from e
+
+
+def load_table(file_path: str, **kwargs) -> pd.DataFrame:
+    """Load a CSV or Parquet file, chosen by extension (``.parquet``/``.pq``).
+
+    The pipeline is documented as reading CSV and Parquet, but every path went
+    through ``pd.read_csv``.  CSV-only options (``sep``) are ignored for
+    Parquet.
+    """
+    if Path(file_path).suffix.lower() in {".parquet", ".pq"}:
+        return load_parquet(file_path)
+    return load_csv(file_path, **kwargs)
 
 
 def load_parquet(file_path: str, **kwargs) -> pd.DataFrame:
@@ -82,8 +96,10 @@ def load_parquet(file_path: str, **kwargs) -> pd.DataFrame:
         if df.empty:
             raise SchemaError(f"Loaded DataFrame is empty: {file_path}")
 
-        return df
+        return _basic_cleanup(df)
 
+    except SchemaError:
+        raise
     except Exception as e:
         raise SchemaError(f"Failed to load Parquet file {file_path}: {e}") from e
 
@@ -129,7 +145,9 @@ def _basic_cleanup(df: pd.DataFrame) -> pd.DataFrame:
     # Strip whitespace from string columns
     string_columns = df.select_dtypes(include=["object"]).columns
     for col in string_columns:
-        df[col] = df[col].astype(str).str.strip()
+        # Strip only real strings: ``astype(str)`` turned NaN into the literal
+        # category ``"nan"``, so the CSV path kept rows the SDK path dropped.
+        df[col] = df[col].map(lambda v: v.strip() if isinstance(v, str) else v)
         # Replace empty strings with NaN
         df[col] = df[col].replace("", np.nan)
 
@@ -166,8 +184,8 @@ def get_file_info(file_path: str) -> dict[str, Any]:
                         "dtypes": {col: str(dtype) for col, dtype in sample.dtypes.items()},
                     }
                 )
-            except Exception as e:
-                info["error"] = f"Could not read CSV sample: {e}"
+            except Exception:
+                info["error"] = "Could not read CSV sample"
 
         return info
 

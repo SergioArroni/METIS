@@ -17,17 +17,21 @@ data:
 
   schema:
     age: continuous
-    gender: categorical
-    height: continuous
+    gender: nominal
+    height: {type: discrete, step: 1}
     weight: continuous
-    ap_hi: continuous
-    ap_lo: continuous
-    cholesterol: categorical
-    gluc: categorical
-    smoke: categorical
-    alco: categorical
-    active: categorical
-    cardio: categorical
+    ap_hi: {type: discrete, step: 1}
+    ap_lo: {type: discrete, step: 1}
+    cholesterol:  # 1 normal, 2 above normal, 3 well above normal (was categorical)
+      type: ordinal
+      levels: [1, 2, 3]
+    gluc:  # same scale as cholesterol (was categorical)
+      type: ordinal
+      levels: [1, 2, 3]
+    smoke: nominal
+    alco: nominal
+    active: nominal
+    cardio: nominal
 
 # ── 2. MÉTRICAS (compartidas por pipeline, calibración y benchmark) ──────────
 
@@ -39,13 +43,13 @@ metrics:
   - "fidelity.marginal.coverage"
   - "fidelity.conditional"
   # Utility:
-  - "utility.tts"
+  # Utility as a substitute for real training data: TSTR only.  TTS, TRTS
+  # and TTRS measure other things (TTRS gave 0.89-0.92 to useless tables).
   - "utility.tstr"
-  - "utility.trts"
-  - "utility.ttrs"
+  - "utility.log_loss"
   # Privacy via subcategory shortcuts:
-  - "privacy.dataset_based.attribute_inference"
-  - "privacy.dataset_based.reidentification"
+  - "privacy.dataset_based.attacks"
+  - "privacy.dataset_based.syntactic"
   - "privacy.dataset_based.empirical_similarity"
 
 # ── 3. REPRODUCIBILIDAD ─────────────────────────────────────────────────────
@@ -56,10 +60,9 @@ reproducibility:
 # ── 4. CALIBRACIÓN (opcional) ────────────────────────────────────────────────
 
 calibration:
-  n_iterations: 5
+  n_iterations: 10
   sample_percentage: 100.0
   n_jobs: 1
-  tune_aggregators: true
 
 # ── 5. EVALUACIÓN (pipeline normal con CSV sintético) ────────────────────────
 

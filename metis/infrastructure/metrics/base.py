@@ -47,6 +47,22 @@ _REDACT_MIN_COUNT = _env_int("METIS_REDACT_MIN_COUNT", 5)
 _REDACT_TOP_K = _env_int("METIS_REDACT_TOP_K", 50)
 
 
+# The caster keeps an ordinal column twice: ``<name>`` (categorical) and the
+# numeric shadow ``<name>__ord`` (rank scaled to [0, 1]).
+ORDINAL_SHADOW_SUFFIX = "__ord"
+
+
+def ordinal_shadows(columns) -> set[str]:
+    """``<name>__ord`` columns whose categorical twin ``<name>`` is also present.
+
+    Metrics that treat every column as a separate variable must drop these,
+    or each ordinal variable counts twice (and its shadow can leak a target).
+    """
+    present = set(columns)
+    n = len(ORDINAL_SHADOW_SUFFIX)
+    return {c for c in present if c.endswith(ORDINAL_SHADOW_SUFFIX) and c[:-n] in present}
+
+
 def _redact_value_counts(value_counts: pd.Series) -> dict[Any, int]:
     """Return a privacy-preserving dict view of ``value_counts``.
 
@@ -129,6 +145,18 @@ class MetricBase:
     # Column introspection
     # ------------------------------------------------------------------
 
+    def _target_columns(self) -> set[str]:
+        """Columns that carry ``context["target"]`` after casting.
+
+        The caster renames a datetime column to ``<name>__ts`` and adds
+        ``<name>__ord`` for an ordinal one; all of them are the target.
+        """
+        target = self._context.get("target")
+        if not target:
+            return set()
+        names = [target] if isinstance(target, str) else list(target)
+        return {f"{t}{suffix}" for t in names for suffix in ("", "__ts", "__ord")}
+
     def _get_numeric_columns(self, exclude_target: bool = True) -> list[str]:
         """Return numeric column names from the real dataset.
 
@@ -138,10 +166,8 @@ class MetricBase:
         """
         numeric_cols = self._real_data.select_dtypes(include=["number"]).columns.tolist()
 
-        if exclude_target and "target" in self._context:
-            target = self._context["target"]
-            if target in numeric_cols:
-                numeric_cols.remove(target)
+        if exclude_target:
+            numeric_cols = [c for c in numeric_cols if c not in self._target_columns()]
 
         return numeric_cols
 
@@ -156,10 +182,8 @@ class MetricBase:
             include=["object", "category"]
         ).columns.tolist()
 
-        if exclude_target and "target" in self._context:
-            target = self._context["target"]
-            if target in categorical_cols:
-                categorical_cols.remove(target)
+        if exclude_target:
+            categorical_cols = [c for c in categorical_cols if c not in self._target_columns()]
 
         return categorical_cols
 

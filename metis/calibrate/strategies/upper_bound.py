@@ -1,25 +1,20 @@
-"""Upper Bound Calibration Strategy (Real vs Real).
+"""Upper Bound Calibration Strategy (unseen real rows).
 
-Establishes the upper bound (best case) by evaluating metrics between
-two disjoint halves of the real dataset (split-half without replacement).
+Establishes the best case of every calibrated metric: a sample of real rows
+the generator never saw, evaluated against the generator's training rows with
+the holdout given, exactly as a synthetic table is evaluated.
 """
 
 import logging
 
-import numpy as np
 import pandas as pd
 
-from metis.calibrate.strategies.base import BaseCalibrationStrategy
+from metis.calibrate.core.bounds import CALIBRATED_FAMILIES
+from metis.calibrate.strategies.base import BaseCalibrationStrategy, tercile_split
 
 
 class UpperBoundStrategy(BaseCalibrationStrategy):
-    """
-    Calibration strategy for upper bounds (Real vs Real).
-
-    Splits the real dataset into two disjoint halves (split-half without
-    replacement) and evaluates metrics between them to establish the best
-    possible scenario.
-    """
+    """Unseen real third vs training third, holdout third given (fidelity and privacy)."""
 
     def __init__(self, evaluator=None, logger: logging.Logger = None):
         super().__init__(logger=logger)
@@ -27,7 +22,7 @@ class UpperBoundStrategy(BaseCalibrationStrategy):
         self._evaluator = None
 
     def get_strategy_name(self) -> str:
-        return "Real vs Real (Split-Half)"
+        return "Unseen real vs training real (thirds, with holdout)"
 
     def calibrate(
         self,
@@ -58,30 +53,12 @@ class UpperBoundStrategy(BaseCalibrationStrategy):
         config_template_path: str,
         sample_size: int,
         seed: int,
-    ) -> dict[str, float]:
-        """
-        Run a single iteration using split-half.
-
-        Splits the real dataset into two disjoint halves (without replacement)
-        and evaluates metrics between them.
-        """
-        rng = np.random.RandomState(seed)
-
-        # Split-half: shuffle and split into two disjoint halves
-        n = len(real_data)
-        indices = rng.permutation(n)
-        half = n // 2
-
-        half_size = min(sample_size, half)
-
-        idx_a = indices[:half_size]
-        idx_b = indices[half : half + half_size]
-
-        real_sample_1 = real_data.iloc[idx_a].reset_index(drop=True)
-        real_sample_2 = real_data.iloc[idx_b].reset_index(drop=True)
-
+    ):
+        train, holdout, unseen = tercile_split(real_data, sample_size, seed, self._stratify_by, self._split)
         return self._evaluator.evaluate(
-            real_data=real_sample_1,
-            synth_data=real_sample_2,
+            real_data=train,
+            synth_data=unseen,
             seed=seed,
+            holdout=holdout,
+            families=CALIBRATED_FAMILIES,
         )

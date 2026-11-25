@@ -5,7 +5,7 @@ import pandas as pd
 
 from metis.infrastructure.metrics.registry import register
 
-from ...fidelity_base import NumericColumnMetric as MarginalMetric
+from ...fidelity_base import NumericColumnMetric as MarginalMetric, relative_difference
 
 
 @register("fidelity.cohens_d")
@@ -45,9 +45,6 @@ class CohensD(MarginalMetric):
         # Pooled standard deviation
         pooled_std = np.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
 
-        if pooled_std > 1e-10:
-            d = abs(real_col.mean() - synth_col.mean()) / pooled_std
-        else:
-            d = 0.0
-
-        return d
+        # Two constant columns: identical if the values agree, totally different
+        # otherwise (it used to return 0, a perfect score, for 1 vs 5).
+        return relative_difference(real_col.mean() - synth_col.mean(), pooled_std)

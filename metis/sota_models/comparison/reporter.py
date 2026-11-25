@@ -17,15 +17,11 @@ import pandas as pd
 
 from .statistical_tests import TestResult, get_statistical_test
 
-DISPLAY_ANCHOR_DIMENSIONS = {
-    "real_data": {"fidelity": 1.0, "utility": 1.0, "privacy": 0.0},
-    "uniform_noise": {"fidelity": 0.0, "utility": 0.0, "privacy": 1.0},
-}
-
-# Airbnb currently uses a mean composite after the cache refresh, so the
-# displayed anchor rows should recompute the overall score from the displayed
-# family extremes to keep tables and figure aligned.
-DISPLAY_MEAN_COMPOSITE_OUTPUT_DIRS = {"benchmark_airbnb"}
+# Tables, rankings and tests are all computed from the same measured scores.
+# There used to be "display anchors" (real_data forced to fidelity = utility = 1
+# and privacy = 0, uniform_noise to the opposite) applied to the tables only,
+# and a different composite formula for Airbnb only: tables and rankings did
+# not describe the same numbers.
 
 
 class NumpyJSONEncoder(json.JSONEncoder):
@@ -83,10 +79,8 @@ class BenchmarkReporter:
             print("No valid results to report")
             return
 
-        display_scores_df = self._adjust_display_scores(scores_df)
-
         # Calculate summary statistics
-        summary_stats = self._calculate_summary_stats(display_scores_df)
+        summary_stats = self._calculate_summary_stats(scores_df)
 
         # Calculate rankings
         rankings = self._calculate_rankings(scores_df)
@@ -115,19 +109,26 @@ class BenchmarkReporter:
         """
         rows = []
 
+        self.failed_runs = {}
         for gen_name, gen_results in self.results.items():
+            failed = [seed for seed, r in gen_results.items() if "error" in r]
+            if failed:
+                # Reported in the summary; they used to vanish from the means.
+                self.failed_runs[gen_name] = failed
             for seed, seed_results in gen_results.items():
                 if "error" not in seed_results:
-                    # Support both formats: new format (aggregated_scores) and old (run_summary)
+                    # Support both formats: new format (aggregated_scores) and old (run_summary).
+                    # A missing family is NaN (it used to be 0.0, which ranked
+                    # the generator last on a family that was never measured).
                     if "aggregated_scores" in seed_results:
                         aggregates = seed_results["aggregated_scores"]
                         row = {
                             "generator": gen_name,
                             "seed": seed,
-                            "fidelity": aggregates.get("fidelity", 0.0),
-                            "utility": aggregates.get("utility", 0.0),
-                            "privacy": aggregates.get("privacy", 0.0),
-                            "overall": aggregates.get("overall", 0.0),
+                            "fidelity": aggregates.get("fidelity", np.nan),
+                            "utility": aggregates.get("utility", np.nan),
+                            "privacy": aggregates.get("privacy", np.nan),
+                            "overall": aggregates.get("overall", np.nan),
                         }
                         if aggregates.get("calibrated"):
                             row["fidelity_raw"] = aggregates.get("fidelity_raw")
@@ -144,10 +145,10 @@ class BenchmarkReporter:
                         row = {
                             "generator": gen_name,
                             "seed": seed,
-                            "fidelity": aggregates.get("fidelity_score", 0.0),
-                            "utility": aggregates.get("utility_score", 0.0),
-                            "privacy": aggregates.get("privacy_score", 0.0),
-                            "overall": aggregates.get("composite_score", 0.0),
+                            "fidelity": aggregates.get("fidelity_score", np.nan),
+                            "utility": aggregates.get("utility_score", np.nan),
+                            "privacy": aggregates.get("privacy_score", np.nan),
+                            "overall": aggregates.get("composite_score", np.nan),
                         }
                         if aggregates.get("composite_score_calibrated"):
                             row["fidelity_raw"] = aggregates.get("fidelity_score_raw")
@@ -175,7 +176,11 @@ class BenchmarkReporter:
         for gen_name in scores_df["generator"].unique():
             gen_scores = scores_df[scores_df["generator"] == gen_name]
 
-            row = {"generator": gen_name}
+            row = {
+                "generator": gen_name,
+                "n_seeds": int(len(gen_scores)),
+                "failed_seeds": list(getattr(self, "failed_runs", {}).get(gen_name, [])),
+            }
 
             for dim in dimensions:
                 values = gen_scores[dim]
@@ -197,31 +202,6 @@ class BenchmarkReporter:
             summary_rows.append(row)
 
         return pd.DataFrame(summary_rows)
-
-    def _adjust_display_scores(self, scores_df: pd.DataFrame) -> pd.DataFrame:
-        """Clamp calibration anchors for presentation without altering raw exports."""
-        adjusted = scores_df.copy()
-
-        if "generator" not in adjusted.columns:
-            return adjusted
-
-        for generator, dimensions in DISPLAY_ANCHOR_DIMENSIONS.items():
-            generator_mask = adjusted["generator"] == generator
-            if not generator_mask.any():
-                continue
-
-            for dimension, value in dimensions.items():
-                if dimension in adjusted.columns:
-                    adjusted.loc[generator_mask, dimension] = value
-
-        if self.output_dir.name in DISPLAY_MEAN_COMPOSITE_OUTPUT_DIRS:
-            anchor_mask = adjusted["generator"].isin(DISPLAY_ANCHOR_DIMENSIONS.keys())
-            if anchor_mask.any() and {"fidelity", "utility", "privacy"}.issubset(adjusted.columns):
-                adjusted.loc[anchor_mask, "overall"] = adjusted.loc[
-                    anchor_mask, ["fidelity", "utility", "privacy"]
-                ].mean(axis=1)
-
-        return adjusted
 
     def _calculate_rankings(self, scores_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         """
@@ -332,7 +312,13 @@ class BenchmarkReporter:
                 f.write("\n")
 
             # Statistical tests section
-            f.write("## Statistical Significance Tests\n\n")
+            f.write("## Statistical Significance Tests (seeds as blocks)\n\n")
+            f.write(
+                "The blocks are the seeds of this dataset: these tests say whether the "
+                "ranking is stable across runs, not whether it generalises to other "
+                "datasets. For that use `compare_across_datasets` (datasets as blocks, "
+                "Demšar 2006).\n\n"
+            )
 
             for dim in ["fidelity", "utility", "privacy", "overall"]:
                 result = test_results[dim]
@@ -341,6 +327,8 @@ class BenchmarkReporter:
                 f.write(f"**Test**: {result.test_name}\n\n")
                 f.write(f"**Statistic**: {result.statistic:.4f}\n\n")
                 f.write(f"**p-value**: {result.p_value:.4f}\n\n")
+                if result.kendall_w is not None:
+                    f.write(f"**Kendall's W**: {result.kendall_w:.4f}\n\n")
                 f.write(
                     f"**Significant**: {'Yes' if result.is_significant else 'No'} (α={result.alpha})\n\n"
                 )
@@ -388,6 +376,7 @@ class BenchmarkReporter:
         report_path = self.output_dir / "benchmark_comparison.json"
 
         report = {
+            "failed_runs": getattr(self, "failed_runs", {}),
             "summary_statistics": summary_stats.to_dict(orient="records"),
             "rankings": {},
             "statistical_tests": {},
@@ -412,6 +401,10 @@ class BenchmarkReporter:
                     float(result.critical_difference) if result.critical_difference else None
                 ),
                 "interpretation": result.interpretation,
+                "kendall_w": result.kendall_w,
+                "n_blocks": result.n_blocks,
+                "dropped_blocks": result.dropped_blocks,
+                "dropped_methods": result.dropped_methods,
             }
 
             if result.pairwise_comparisons is not None:
@@ -439,4 +432,80 @@ class BenchmarkReporter:
         for dim in ["fidelity", "utility", "privacy", "overall"]:
             avg_ranks = rankings[dim]["avg_ranks"]
             avg_ranks.to_csv(self.output_dir / f"rankings_{dim}.csv", header=["average_rank"])
-            avg_ranks.to_csv(self.output_dir / f"rankings_{dim}.csv", header=["average_rank"])
+
+
+def compare_across_datasets(
+    results_by_dataset: dict[str, dict],
+    output_dir: str,
+    alpha: float = 0.05,
+) -> dict[str, TestResult]:
+    """Friedman + Nemenyi with the datasets as blocks (Demšar 2006).
+
+    ``results_by_dataset`` maps each dataset to the results dictionary that
+    ``BenchmarkReporter`` takes.  Each generator's score on a dataset is the
+    mean over its seeds; the test then asks whether some generators are
+    better than others *across datasets*, which the per-dataset reports
+    (seeds as blocks) cannot.  With few datasets the critical difference is
+    large (k = 12, N = 4: 8.3 ranks) and only the extremes separate; the
+    interpretation carries the low-power warning of the test.
+
+    Writes ``cross_dataset_comparison.{json,md}`` in *output_dir* and returns
+    the test per dimension.
+    """
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    dims = ["fidelity", "utility", "privacy", "overall"]
+    frames = []
+    for dataset, results in results_by_dataset.items():
+        reporter = BenchmarkReporter.__new__(BenchmarkReporter)
+        reporter.results = results
+        scores = reporter._extract_scores()
+        if scores.empty:
+            continue
+        means = scores.groupby("generator")[dims].mean().reset_index()
+        means["dataset"] = dataset
+        frames.append(means)
+    if not frames:
+        return {}
+    table = pd.concat(frames, ignore_index=True)
+    test = get_statistical_test("friedman-nemenyi", alpha, block_label="dataset")
+    datasets = sorted(table["dataset"].unique())
+    report: dict = {"datasets": datasets, "statistical_tests": {}}
+    lines = [
+        "# Cross-dataset comparison (datasets as blocks)",
+        "",
+        f"Datasets: {', '.join(datasets)}. Score of a generator on a dataset = mean over "
+        "its seeds.",
+        "",
+    ]
+    results: dict[str, TestResult] = {}
+    for dim in dims:
+        pivot = table.pivot(index="dataset", columns="generator", values=dim)
+        res = test.compare(pivot, metric_name=dim)
+        results[dim] = res
+        avg_ranks = pivot.dropna().rank(axis=1, ascending=False).mean().sort_values()
+        report["statistical_tests"][dim] = {
+            "statistic": None if np.isnan(res.statistic) else float(res.statistic),
+            "p_value": None if np.isnan(res.p_value) else float(res.p_value),
+            "is_significant": bool(res.is_significant),
+            "critical_difference": res.critical_difference,
+            "kendall_w": res.kendall_w,
+            "n_blocks": res.n_blocks,
+            "dropped_blocks": res.dropped_blocks,
+            "dropped_methods": res.dropped_methods,
+            "average_ranks": avg_ranks.to_dict(),
+            "interpretation": res.interpretation,
+            "pairwise_comparisons": (
+                res.pairwise_comparisons.to_dict(orient="records")
+                if res.pairwise_comparisons is not None
+                else None
+            ),
+        }
+        lines += [f"## {dim.capitalize()}", "", res.interpretation, ""]
+        lines += ["| Generator | Avg rank |", "|---|---|"]
+        lines += [f"| {g} | {r:.2f} |" for g, r in avg_ranks.items()]
+        lines.append("")
+    with (out / "cross_dataset_comparison.json").open("w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, cls=NumpyJSONEncoder)
+    (out / "cross_dataset_comparison.md").write_text("\n".join(lines), encoding="utf-8")
+    return results

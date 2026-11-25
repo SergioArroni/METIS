@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ...domain.entities import ReportSpec, RunSummary
+from ...domain.errors import ReportError
 from ...infrastructure.reporting.registry import get_reporter_registry
 from ...infrastructure.runtime.logging import get_logger
 
@@ -24,6 +25,8 @@ class ReportGenerator:
         """Write reports to disk according to config['report'].
 
         Silently skips if no report section is present or formats list is empty.
+        Every format is attempted; if any fails, :class:`ReportError` is raised
+        afterwards naming them.
         """
         report_cfg = config.get("report")
         if not report_cfg:
@@ -41,13 +44,19 @@ class ReportGenerator:
         )
         Path(spec.output_dir).mkdir(parents=True, exist_ok=True)
 
+        failed: dict[str, str] = {}
         for fmt in spec.formats:
             try:
                 reporter_cls = self._reporter_registry.get(fmt)
                 reporter_cls().render(summary, spec)
-                self._logger.info("Generated %s report → %s", fmt, spec.output_dir)
-            except Exception as exc:  # noqa: BLE001
-                self._logger.error("Failed to generate %s report: %s", fmt, exc)
+                self._logger.info("Generated %s report -> %s", fmt, spec.output_dir)
+            except Exception as exc:  # noqa: BLE001 - other formats still run
+                self._logger.exception("Failed to generate %s report: %s", fmt, exc)
+                failed[fmt] = f"{type(exc).__name__}: {exc}"
+        if failed:
+            # Logged and forgotten before: ``metis evaluate`` exited 0 with a
+            # report missing.
+            raise ReportError(f"Report generation failed for {failed}")
 
     # ----- helpers for multi-run persistence ---------------------------------
 

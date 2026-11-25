@@ -22,14 +22,14 @@ class CacheManager:
     Manages calibration result caching with fingerprint-based validation.
 
     Automatically detects when cached calibration results can be reused based on:
-    - Data content fingerprint (1000-row sample)
+    - Data content fingerprint (full content hash)
     - Configuration fingerprint (relevant metrics/schema)
     - Calibration parameters (iterations, sample_size, seed)
 
     Usage:
         >>> manager = CacheManager(cache_dir="metis/calibrate/cache")
         >>> bounds = manager.get_or_calibrate(
-        ...     real_data=df, config_path="config.yaml", n_iterations=12, sample_size=750
+        ...     real_data=df, config_path="config.yaml", n_iterations=12, sample_percentage=50.0
         ... )
         # Returns cached if valid, else runs calibration
     """
@@ -57,16 +57,8 @@ class CacheManager:
         """
         tag = date_tag or datetime.now().strftime("%Y%m%d")
         if self.dataset_name:
-            filename = f"bounds_{self.dataset_name}_{cache_key}_{tag}.json"
-        else:
-            filename = f"bounds_{cache_key}_{tag}.json"
-        # Safety: cap filename at 150 chars to stay within Windows MAX_PATH
-        if len(filename) > 150:
-            import hashlib
-
-            suffix = hashlib.sha256(filename.encode()).hexdigest()[:16]
-            filename = f"bounds_{self.dataset_name or 'cal'}_{suffix}_{tag}.json"
-        return self.cache_dir / filename
+            return self.cache_dir / f"bounds_{self.dataset_name}_{cache_key}_{tag}.json"
+        return self.cache_dir / f"bounds_{cache_key}_{tag}.json"
 
     def _find_cache_path(self, cache_key: str) -> Path | None:
         """Find an existing cache file for *cache_key* (any date tag).
@@ -98,12 +90,12 @@ class CacheManager:
         self,
         real_data: pd.DataFrame,
         config_path: str,
-        n_iterations: int = 12,
+        n_iterations: int = 10,
         sample_percentage: float = 100.0,  # Percentage of dataset to use
         base_seed: int = 42,
         n_jobs: int = -1,
         force_recalibrate: bool = False,
-        tune_aggregators: bool = True,
+        tune_aggregators: bool = False,
     ) -> CalibrationBounds:
         """
         Get cached calibration or run new calibration if cache invalid.
@@ -112,6 +104,9 @@ class CacheManager:
         1. Data fingerprint match
         2. Config fingerprint match
         3. Parameter match (iterations, sample_percentage, seed)
+
+        ``tune_aggregators`` is passed to the calibrator, which ignores it
+        (per-metric calibration, see ``metis.calibrate.core.bounds``).
 
         Args:
             real_data: Real dataset to calibrate against
@@ -172,15 +167,16 @@ class CacheManager:
                         config_fp,
                     )
                     return bounds
-                logger.warning(
-                    "Cache invalid - fingerprint mismatch:\n"
-                    "  Data: %s... vs %s...\n"
-                    "  Config: %s vs %s",
-                    cached_data_fp[:16],
-                    data_fp[:16],
-                    cached_config_fp,
-                    config_fp,
-                )
+                else:
+                    logger.warning(
+                        "Cache invalid - fingerprint mismatch:\n"
+                        "  Data: %s... vs %s...\n"
+                        "  Config: %s vs %s",
+                        str(cached_data_fp)[:16],
+                        data_fp[:16],
+                        cached_config_fp,
+                        config_fp,
+                    )
             except Exception as e:
                 logger.warning("Failed to load cache: %s", e)
 
@@ -242,12 +238,13 @@ class CacheManager:
             cache_key: Specific cache key to invalidate. If None, clears all cache.
         """
         if cache_key:
-            cache_path = self._get_cache_path(cache_key)
             agg_path = self._get_aggregators_cache_path(cache_key)
-
-            if cache_path.exists():
+            # Any date tag: ``_get_cache_path`` builds *today's* name, so files
+            # calibrated on another day were never removed.
+            prefix = f"bounds_{self.dataset_name}_" if self.dataset_name else "bounds_"
+            for cache_path in self.cache_dir.glob(f"{prefix}{cache_key}_*.json"):
                 cache_path.unlink()
-                logger.info("Invalidated cache: %s", cache_key)
+                logger.info("Invalidated cache: %s", cache_path.name)
 
             if agg_path.exists():
                 agg_path.unlink()

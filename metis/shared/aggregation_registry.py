@@ -22,6 +22,7 @@ import numpy as np
 from scipy import stats
 
 from metis.infrastructure.metrics.aggregation.stochastic_dominance import (
+    DEFAULT_RISK_AVERSION,
     fsd_score_for_row,
     ssd_score,
 )
@@ -72,8 +73,8 @@ AGGREGATION_FUNCTIONS: dict[str, Callable[[list], float]] = {
     # FSD: First-order (mean-based, less risk-averse)
     "fsd": lambda x: fsd_score_for_row(v) if len(v := _strip_nan(x)) else float("nan"),
     # SSD: Second-order (exponential utility, risk-averse)
-    # Default risk_aversion=5.0 (moderate)
-    "ssd": lambda x: ssd_score(v, risk_aversion=5.0) if len(v := _strip_nan(x)) else float("nan"),
+    # Default risk aversion: DEFAULT_RISK_AVERSION (3, §22)
+    "ssd": lambda x: ssd_score(v, risk_aversion=DEFAULT_RISK_AVERSION) if len(v := _strip_nan(x)) else float("nan"),
 }
 
 

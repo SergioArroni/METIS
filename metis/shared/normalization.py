@@ -18,9 +18,14 @@ import numpy as np
 
 
 def clamp(x: float) -> float:
-    """Clamp value to [0, 1] range."""
-    if math.isnan(x) or math.isinf(x):
-        return 0.0
+    """Clamp value to [0, 1] range.
+
+    NaN is propagated (never silently mapped to 0): a metric that could not be
+    computed must stay distinguishable from a metric that scored the worst
+    possible value. ``+inf``/``-inf`` clamp to 1/0 like any other number.
+    """
+    if math.isnan(x):
+        return float("nan")
     return max(0.0, min(1.0, x))
 
 
@@ -118,7 +123,7 @@ def normalize_delta(value: float, _params: dict[str, Any] | None = None) -> floa
     Normalize delta/difference metrics.
 
     Uses inverse: 1 / (1 + |value|).
-    For metrics like delta_iqr, delta_mad, entropy_delta, gini_delta.
+    For unbounded deltas such as delta_iqr, delta_mad or entropy_delta.
 
     Args:
         value: Raw delta value where 0 = best
@@ -211,17 +216,21 @@ METRIC_NORMALIZATION_MAP: dict[str, NormalizationType] = {
     # ==========================================================================
     "fidelity.correlation_matrix": NormalizationType.SIMILARITY,
     "fidelity.mmd": NormalizationType.UNBOUNDED_DISTANCE,
-    "fidelity.energy_distance": NormalizationType.UNBOUNDED_DISTANCE,
+    # Energy coefficient H in [0, 1] (``EnergyDistanceMetric``): score 1 − H.
+    "fidelity.energy_distance": NormalizationType.BOUNDED_DISTANCE,
     "fidelity.outliers_coverage": NormalizationType.SIMILARITY,
+    # 2·(1 − AUC) of the real-vs-synthetic classifier, already in [0, 1].
+    "fidelity.discriminator": NormalizationType.SIMILARITY,
     # ==========================================================================
     # FIDELITY - Marginal - Tails
     # ==========================================================================
     "fidelity.ks": NormalizationType.BOUNDED_DISTANCE,
     "fidelity.wasserstein": NormalizationType.UNBOUNDED_DISTANCE,
-    "fidelity.anderson_darling": NormalizationType.UNBOUNDED_DISTANCE,
+    # Bias-corrected AD discrepancy / its maximum, in [0, 1] (anderson_darling.py).
+    "fidelity.anderson_darling": NormalizationType.BOUNDED_DISTANCE,
     "fidelity.hellinger": NormalizationType.BOUNDED_DISTANCE,
     "fidelity.kde_ise": NormalizationType.UNBOUNDED_DISTANCE,
-    "fidelity.delta_exceedance": NormalizationType.DELTA,
+    "fidelity.delta_exceedance": NormalizationType.BOUNDED_DISTANCE,
     # ==========================================================================
     # FIDELITY - Marginal - Scales
     # ==========================================================================
@@ -238,7 +247,9 @@ METRIC_NORMALIZATION_MAP: dict[str, NormalizationType] = {
     "fidelity.kl": NormalizationType.UNBOUNDED_DISTANCE,
     "fidelity.psi": NormalizationType.UNBOUNDED_DISTANCE,
     "fidelity.entropy_delta": NormalizationType.DELTA,
-    "fidelity.gini_delta": NormalizationType.DELTA,
+    # Bounded in [0, 1]: 1/(1+delta) (N4) never went below 0.5 for it
+    # (nor for delta_exceedance).
+    "fidelity.gini_delta": NormalizationType.BOUNDED_DISTANCE,
     # ==========================================================================
     # FIDELITY - Conditional - Num↔Num
     # ==========================================================================
@@ -260,7 +271,8 @@ METRIC_NORMALIZATION_MAP: dict[str, NormalizationType] = {
     # ==========================================================================
     "fidelity.cramers_v": NormalizationType.BOUNDED_DISTANCE,
     "fidelity.theils_u": NormalizationType.BOUNDED_DISTANCE,
-    "fidelity.chi2_stat": NormalizationType.UNBOUNDED_DISTANCE,
+    # Raw value is the bias-corrected V^2 (in [0, 1]); see chi2_stat.py.
+    "fidelity.chi2_stat": NormalizationType.BOUNDED_DISTANCE,
     # ==========================================================================
     # PRIVACY
     # ==========================================================================
@@ -289,12 +301,9 @@ METRIC_NORMALIZATION_PARAMS: dict[str, dict[str, Any]] = {
     # Unbounded distances - scale based on typical ranges
     "fidelity.wasserstein": {"scale": 0.5},
     "fidelity.mmd": {"scale": 0.1},
-    "fidelity.energy_distance": {"scale": 1.0},
-    "fidelity.anderson_darling": {"scale": 5.0},
     "fidelity.kde_ise": {"scale": 0.1},
     "fidelity.kl": {"scale": 1.0},
     "fidelity.psi": {"scale": 0.25},
-    "fidelity.chi2_stat": {"scale": 100.0},
     # Mutual information
     "fidelity.mi": {"mi_scale": 1.0},
     # DCR
@@ -318,7 +327,7 @@ def get_normalizer(metric_id: str) -> Callable[[float, dict | None], float]:
         return NORMALIZATION_FUNCTIONS[norm_type]
 
     # Try without prefix
-    short_id = metric_id.rsplit(".", maxsplit=1)[-1] if "." in metric_id else metric_id
+    short_id = metric_id.split(".")[-1] if "." in metric_id else metric_id
     for full_id, norm_type in METRIC_NORMALIZATION_MAP.items():
         if full_id.endswith(f".{short_id}"):
             return NORMALIZATION_FUNCTIONS[norm_type]

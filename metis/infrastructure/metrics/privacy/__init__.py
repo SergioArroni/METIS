@@ -12,41 +12,36 @@ Categories:
 2. Mechanism-based Privacy Metrics:
    - Differential Privacy
 
-Aggregation uses Stochastic Dominance:
-- FSD for Levels 1-2 (metrics → subcategories)
-- SSD for Level 3 (subcategories → categories → final)
+Aggregation into the privacy family score is done by the generic family
+aggregator from the taxonomy (``metis.domain.taxonomy.PRIVACY_METRICS``).
 
 All metrics are normalized to [0, 1] where 1 = most private.
 """
 
-# Dataset-based metrics - Attribute Inference
-from .dataset_based.attribute_inference import InferenceAttackMetric, MembershipInferenceMetric
+# Dataset-based metrics - Attacks
+from .dataset_based.attacks import (
+    InferenceAttackMetric,
+    MembershipInferenceMetric,
+    RecordLinkageMetric,
+)
 
 # Dataset-based metrics - Empirical Similarity
 from .dataset_based.empirical_similarity import DCRMetric, NNAAMetric
 
-# Dataset-based metrics - Reidentification
-from .dataset_based.reidentification import (
-    KAnonymityMetric,
-    LDiversityMetric,
-    RecordLinkageMetric,
-    TClosenessMetric,
-)
+# Dataset-based metrics - Syntactic
+from .dataset_based.syntactic import KAnonymityMetric, LDiversityMetric, TClosenessMetric
 
 # Mechanism-based metrics
 from .mechanism_based import DifferentialPrivacyMetric
 
-# Aggregator
-from .privacy_aggregator import PrivacyAggregator, PrivacyResult
-
 # Base classes
 from .privacy_base import (
-    AttributeInferenceMetric,
+    AttackMetric,
     BasePrivacyMetric,
     DatasetPrivacyMetric,
     EmpiricalSimilarityMetric,
     MechanismPrivacyMetric,
-    ReidentificationMetric,
+    SyntacticMetric,
 )
 
 __all__ = [
@@ -54,13 +49,13 @@ __all__ = [
     "BasePrivacyMetric",
     "DatasetPrivacyMetric",
     "MechanismPrivacyMetric",
-    "AttributeInferenceMetric",
-    "ReidentificationMetric",
+    "AttackMetric",
+    "SyntacticMetric",
     "EmpiricalSimilarityMetric",
-    # Attribute Inference
+    # Attacks
     "MembershipInferenceMetric",
     "InferenceAttackMetric",
-    # Reidentification
+    # Syntactic
     "KAnonymityMetric",
     "LDiversityMetric",
     "TClosenessMetric",
@@ -70,7 +65,4 @@ __all__ = [
     "NNAAMetric",
     # Mechanism-based
     "DifferentialPrivacyMetric",
-    # Aggregator
-    "PrivacyAggregator",
-    "PrivacyResult",
 ]

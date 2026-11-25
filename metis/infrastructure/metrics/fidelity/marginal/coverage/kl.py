@@ -8,6 +8,7 @@ from metis.infrastructure.metrics.registry import register
 from metis.shared.distributions import align_distributions
 
 from ...fidelity_base import UniversalColumnMetric as UniversalMarginalMetric
+from ._binning import is_continuous, quantile_bin_distributions
 
 
 @register("fidelity.kl")
@@ -39,7 +40,11 @@ class KLDivergenceMetric(UniversalMarginalMetric):
         Returns:
             KL divergence in [0, 10], lower is better
         """
-        p, q = align_distributions(real_col, synth_col)
+        if is_continuous(real_col):
+            # Quantile bins of the real column (see ``quantile_bin_distributions``).
+            p, q = quantile_bin_distributions(real_col, synth_col)
+        else:
+            p, q = align_distributions(real_col, synth_col)
         # KL(P || Q) = sum(p * log(p/q))
         kl = np.sum(rel_entr(p, q))
         return min(kl, 10.0)  # Clip extreme values

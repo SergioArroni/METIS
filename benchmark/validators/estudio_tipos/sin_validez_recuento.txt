@@ -1,0 +1,164 @@
+patrón reagrega.py cambiado
+patrón reagrega_banco.py cambiado
+patrón analiza_aviso.py cambiado
+patrón analiza_matices.py cambiado
+  $ reagrega_banco.py /home/ubuntu/doc-split/metis/metis/calibrate/cache /home/ubuntu/strat/v3/res_sv/chk_metis.jsonl res/metis.jsonl -> 0 escrito /home/ubuntu/strat/v3/res_sv/chk_metis.jsonl 810 
+res_tax3/metis.jsonl frente a reagregado ahora: (810, 810, 0.0)
+  $ reagrega_banco.py /home/ubuntu/doc-split/metis/metis/calibrate/cache /home/ubuntu/strat/sem/s1000/chk_metis.jsonl /home/ubuntu/strat/sem/s1000/ev_meti -> 0 escrito /home/ubuntu/strat/sem/s1000/chk_metis.jsonl 810 
+sem s1000: (810, 810, 0.0)
+  $ reagrega_banco.py /home/ubuntu/doc-split/metis/metis/calibrate/cache /home/ubuntu/strat/sem/s2000/chk_metis.jsonl /home/ubuntu/strat/sem/s2000/ev_meti -> 0 escrito /home/ubuntu/strat/sem/s2000/chk_metis.jsonl 810 
+sem s2000: (810, 810, 0.0)
+bruto n0 frente a res_tax3 n0 (contaminado si > 0): (810, 810, 0.0)
+bruto n2 frente a res_tax3 n2 (contaminado si > 0): (810, 810, 0.407893873415812)
+res_sv/metis.jsonl 735
+  $ reorganiza.py res_sv/metis.jsonl res_estudio_tax3/metis_est_*.jsonl /home/ubuntu/doc-split/metis/metis/calibrate/cache informe_reorganiza_sv.md -> 0 escrito informe_reorganiza_sv.md 
+  $ analiza_aviso.py res_sv res_estudio_tax3 /home/ubuntu/doc-split/metis/metis/calibrate/cache informe_aviso_sv.md -> 0 escrito informe_aviso_sv.md 
+¿Mejora la nota si cada subcategoría agrupa métricas que miden lo mismo?  Reagrega el banco con
+taxonomías de fidelidad alternativas (mismos valores por métrica y mismas calibraciones).
+
+| variante | general | alguna | nota de fidelidad (72) | buenas marcadas | diluidos (banco + estudio) |
+|---|---|---|---|---|---|
+| actual | 123/142 | 130/142 | 83/87 | 1/25 | 5 |
+| A | 122/142 | 128/142 | 80/87 | 1/25 | 7 |
+
+- **actual**, diluidos: adult trios_rotos; cardio filas_imposibles; rrhh categorias_raras_perdidas; rrhh copias_2; telco colas_extremas
+
+- **A**, diluidos: adult ordinal_cerca_20; adult trios_rotos; cardio colas_extremas; cardio filas_imposibles; rrhh categorias_raras_perdidas; rrhh copias_2; telco colas_extremas
+
+## Coherencia de los grupos de fidelidad
+
+### actual
+
+| grupo | métricas | ρ interno | ρ externo |
+|---|---|---|---|
+| fidelity.conditional.cat_cat | cramers_v, theils_u, chi2_stat | 0.89 | 0.15 |
+| fidelity.conditional.num_cat | eta_squared, point_biserial, kruskal_epsilon | 0.80 | 0.18 |
+| fidelity.conditional.num_num | pearson, spearman, dcor, mi | 0.76 | 0.26 |
+| fidelity.detection | discriminator | — | 0.41 |
+| fidelity.global | mmd, energy_distance, outliers_coverage, correlation_matrix | 0.61 | 0.33 |
+| fidelity.marginal.coverage | tvd, js, kl, psi, entropy_delta, gini_delta | 0.73 | 0.26 |
+| fidelity.marginal.scales | delta_mean, delta_median, delta_iqr, delta_mad, cohens_d | 0.50 | 0.28 |
+| fidelity.marginal.tails | ks, wasserstein, anderson_darling, hellinger, kde_ise, delta_exceedance | 0.82 | 0.22 |
+
+### A
+
+| grupo | métricas | ρ interno | ρ externo |
+|---|---|---|---|
+| fidelity.conditional.cat_cat | cramers_v, theils_u, chi2_stat | 0.89 | 0.15 |
+| fidelity.conditional.num_cat | eta_squared, point_biserial, kruskal_epsilon | 0.80 | 0.18 |
+| fidelity.conditional.num_num | pearson, spearman, dcor, mi, correlation_matrix | 0.84 | 0.26 |
+| fidelity.global.detection | discriminator | — | 0.41 |
+| fidelity.global.distances | mmd, energy_distance | 0.99 | 0.49 |
+| fidelity.marginal.coverage | tvd, js, kl, psi, entropy_delta, gini_delta | 0.73 | 0.26 |
+| fidelity.marginal.scales | delta_mean, delta_median, delta_iqr, delta_mad, cohens_d | 0.50 | 0.28 |
+| fidelity.marginal.tails | ks, wasserstein, anderson_darling, hellinger, kde_ise, delta_exceedance, outliers_coverage | 0.81 | 0.19 |
+
+## Resumen por K
+
+| K | buenas avisadas | defectos avisados | defectos vistos por nota o aviso | recuperados |
+|---|---|---|---|---|
+| 3 | 5/25 | 143/156 | 147/156 | 10 |
+| 4 | 3/25 | 134/156 | 141/156 | 4 |
+| 5 | 0/25 | 129/156 | 139/156 | 2 |
+| 6 | 0/25 | 128/156 | 139/156 | 2 |
+
+### K = 3
+
+Recuperados (ninguna nota los ve, el aviso sí): adult ordinal_cerca_20 (fidelity.discriminator, z 4.3); adult trios_rotos (fidelity.cramers_v, z 3.0); airbnb etiquetas_ruidosas_10 (fidelity.delta_median, z 3.0); cardio colas_extremas (fidelity.outliers_coverage, z 8.4); cardio etiquetas_ruidosas_10 (fidelity.delta_mad, z 3.2); cardio filas_imposibles (privacy.dcr, z 4.2); cardio trios_rotos (privacy.dcr, z 3.2); rrhh categorias_raras_perdidas (fidelity.kl, z 11.8); rrhh copias_2 (privacy.k_anonymity, z 3.8); telco copias_1 (privacy.l_diversity, z 3.9).
+
+Tablas buenas avisadas:
+
+- adult muestra 4: privacy.nnaa (4.9)
+- cardio muestra 0: fidelity.delta_mad (3.2)
+- cardio muestra 2: privacy.dcr (4.8)
+tablas por dataset {'adult': 180, 'airbnb': 155, 'cardio': 170, 'rrhh': 175, 'telco': 150}
+rho correlation_matrix con num_num 0.87 [0.87, 0.68, 0.73, 0.88, 0.92]
+rho outliers_coverage con tails 0.75 [0.79, 0.72, 0.8, 0.75, 0.67]
+rho mmd con dist 0.99 [0.99, 0.99, 1.0, 1.0, 0.98]
+missingness: datasets con valor [] max rho mediana []
+semilla base   metis      detecta 126 de 142 (sin dato 0)
+semilla base   sdmetrics  detecta  79 de 142 (sin dato 0)
+semilla base   syntheval  detecta  96 de 142 (sin dato 0)
+semilla base   synthcity  detecta 104 de 142 (sin dato 3)
+semilla s1000  metis      detecta 127 de 142 (sin dato 0)
+semilla s1000  sdmetrics  detecta  79 de 142 (sin dato 0)
+semilla s1000  syntheval  detecta  96 de 142 (sin dato 0)
+semilla s1000  synthcity  detecta 103 de 142 (sin dato 3)
+semilla s2000  metis      detecta 127 de 142 (sin dato 0)
+semilla s2000  sdmetrics  detecta  79 de 142 (sin dato 0)
+semilla s2000  syntheval  detecta  96 de 142 (sin dato 0)
+semilla s2000  synthcity  detecta 104 de 142 (sin dato 0)
+metis recuentos [126, 127, 127] | casos que cambian frente a base [[('rrhh', 'categorias_raras_perdidas')], [('adult', 'ordinal_cerca_20')]]
+sdmetrics recuentos [79, 79, 79] | casos que cambian frente a base [[], []]
+syntheval recuentos [96, 96, 96] | casos que cambian frente a base [[], []]
+synthcity recuentos [104, 103, 104] | casos que cambian frente a base [[('airbnb', 'colas_extremas'), ('cardio', 'colas_extremas'), ('rrhh', 'etiquetas_ruidosas')], [('airbnb', 'etiquetas_ruidosas_10'), ('rrhh', 'etiquetas_ruidosas')]]
+
+== RRHH etiquetas ruidosas
+
+-- completo | bounds_banco3_rrhh_calibration_2e5ac1ff1af6a0ecee5a7cff0075c
+   cota utility.log_loss {}
+   cota utility.tstr {}
+   bueno                    utilidad [0.988, 1.0, 1.0, 0.896, 1.0] | fid [1.0, 1.0, 1.0, 1.0, 1.0]
+      utility.log_loss             [None, None, None, None, None]
+      utility.tstr                 [0.9881, 1.0, 1.0, 0.8965, 1.0]
+   etiquetas_ruidosas_10    utilidad [1.0, 1.0, 1.0, 0.979, 1.0] | fid [1.0, 1.0, 1.0, 1.0, 1.0]
+      utility.log_loss             [None, None, None, None, None]
+      utility.tstr                 [1.0, 1.0, 1.0, 0.9786, 1.0]
+   etiquetas_ruidosas       utilidad [0.872, 1.0, 0.969, 1.0, 1.0] | fid [1.0, 1.0, 1.0, 0.999, 1.0]
+      utility.log_loss             [None, None, None, None, None]
+      utility.tstr                 [0.8724, 1.0, 0.9687, 1.0, 1.0]
+   etiquetas_ruidosas_50    utilidad [0.606, 0.607, 0.244, 1.0, 0.481] | fid [0.999, 0.987, 0.984, 0.981, 1.0]
+      utility.log_loss             [None, None, None, None, None]
+      utility.tstr                 [0.6055, 0.6067, 0.2442, 1.0, 0.4809]
+   z utilidad {'etiquetas_ruidosas_10': -0.5, 'etiquetas_ruidosas': -0.5, 'etiquetas_ruidosas_50': 8.2}
+
+-- n2 (ordinales nominales) | bounds_banco3_rrhh_n2_calibration_2e5ac1ff1af6a0ecee5a7cff00
+   cota utility.log_loss {}
+   cota utility.tstr {}
+   bueno                    utilidad [1.0, 1.0, 1.0, 0.973, 1.0] | fid [1.0, 1.0, 1.0, 1.0, 1.0]
+      utility.log_loss             [1.0, 1.0, 1.0, 1.0, 1.0]
+      utility.tstr                 [1.0, 1.0, 1.0, 0.9472, 1.0]
+   etiquetas_ruidosas_10    utilidad [1.0, 1.0, 1.0, 1.0, 0.994] | fid [1.0, 1.0, 1.0, 1.0, 1.0]
+      utility.log_loss             [1.0, 1.0, 1.0, 1.0, 0.9883]
+      utility.tstr                 [1.0, 1.0, 1.0, 1.0, 1.0]
+   etiquetas_ruidosas       utilidad [0.196, 0.212, 0.211, 0.776, 0.215] | fid [1.0, 1.0, 1.0, 0.999, 1.0]
+      utility.log_loss             [0.0, 0.0, 0.0, 0.6433, 0.0]
+      utility.tstr                 [0.733, 0.9433, 0.9212, 1.0, 1.0]
+   etiquetas_ruidosas_50    utilidad [0.193, 0.199, 0.091, 0.215, 0.174] | fid [0.999, 0.987, 0.984, 0.981, 1.0]
+      utility.log_loss             [0.0, 0.0, 0.0, 0.0, 0.0]
+      utility.tstr                 [0.7075, 0.761, 0.2156, 1.0, 0.5604]
+   z utilidad {'etiquetas_ruidosas_10': -0.4, 'etiquetas_ruidosas': 63.7, 'etiquetas_ruidosas_50': 65.3}
+
+-- n0 (formato) | bounds_banco3_rrhh_n0_calibration_2e5ac1ff1af6a0ecee5a7cff00
+   cota utility.log_loss {}
+   cota utility.tstr {}
+   bueno                    utilidad [1.0, 1.0, 1.0, 1.0, 1.0] | fid [1.0, 1.0, 1.0, 1.0, 1.0]
+      utility.log_loss             [None, None, None, None, None]
+      utility.tstr                 [1.0, 1.0, 1.0, 1.0, 1.0]
+   etiquetas_ruidosas_10    utilidad [1.0, 1.0, 1.0, 1.0, 1.0] | fid [1.0, 1.0, 1.0, 1.0, 1.0]
+      utility.log_loss             [None, None, None, None, None]
+      utility.tstr                 [1.0, 1.0, 1.0, 1.0, 1.0]
+   etiquetas_ruidosas       utilidad [0.825, 1.0, 1.0, 1.0, 1.0] | fid [1.0, 1.0, 1.0, 1.0, 1.0]
+      utility.log_loss             [None, None, None, None, None]
+      utility.tstr                 [0.8245, 1.0, 1.0, 1.0, 1.0]
+   etiquetas_ruidosas_50    utilidad [0.663, 0.539, 0.284, 1.0, 0.7] | fid [0.997, 0.985, 0.978, 0.983, 1.0]
+      utility.log_loss             [None, None, None, None, None]
+      utility.tstr                 [0.6629, 0.5391, 0.284, 1.0, 0.7003]
+   z utilidad {'etiquetas_ruidosas_10': 0.0, 'etiquetas_ruidosas': 0.0, 'etiquetas_ruidosas_50': 67.4}
+
+-- plano | bounds_banco3_rrhh_plano_calibration_2e5ac1ff1af6a0ecee5a7cf
+   cota utility.log_loss {}
+   cota utility.tstr {}
+   bueno                    utilidad [1.0, 1.0, 1.0, 0.973, 1.0] | fid [1.0, 1.0, 1.0, 1.0, 1.0]
+      utility.log_loss             [1.0, 1.0, 1.0, 1.0, 1.0]
+      utility.tstr                 [1.0, 1.0, 1.0, 0.9472, 1.0]
+   etiquetas_ruidosas_10    utilidad [1.0, 1.0, 1.0, 1.0, 0.994] | fid [1.0, 1.0, 1.0, 1.0, 1.0]
+      utility.log_loss             [1.0, 1.0, 1.0, 1.0, 0.9883]
+      utility.tstr                 [1.0, 1.0, 1.0, 1.0, 1.0]
+   etiquetas_ruidosas       utilidad [0.196, 0.212, 0.211, 0.776, 0.215] | fid [1.0, 1.0, 1.0, 0.999, 1.0]
+      utility.log_loss             [0.0, 0.0, 0.0, 0.6433, 0.0]
+      utility.tstr                 [0.733, 0.9433, 0.9212, 1.0, 1.0]
+   etiquetas_ruidosas_50    utilidad [0.193, 0.199, 0.091, 0.215, 0.174] | fid [0.999, 0.987, 0.984, 0.981, 1.0]
+      utility.log_loss             [0.0, 0.0, 0.0, 0.0, 0.0]
+      utility.tstr                 [0.7075, 0.761, 0.2156, 1.0, 0.5604]
+   z utilidad {'etiquetas_ruidosas_10': -0.4, 'etiquetas_ruidosas': 63.7, 'etiquetas_ruidosas_50': 65.3}

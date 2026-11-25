@@ -8,8 +8,9 @@ import pandas as pd
 from .base import BaseGenerator
 
 try:
-    from sdv.metadata import SingleTableMetadata
     from sdv.single_table import GaussianCopulaSynthesizer
+
+    from . import _sdv
 
     SDV_AVAILABLE = True
 except ImportError:
@@ -58,18 +59,11 @@ class GaussianCopulaGenerator(BaseGenerator):
         continuous_columns = continuous_columns or []
 
         # Build SDV metadata
-        metadata = SingleTableMetadata()
-        metadata.detect_from_dataframe(real_data)
-
-        for col in categorical_columns:
-            if col in real_data.columns:
-                metadata.update_column(col, sdtype="categorical")
-        for col in ordinal_columns:
-            if col in real_data.columns:
-                metadata.update_column(col, sdtype="categorical")
-        for col in continuous_columns:
-            if col in real_data.columns:
-                metadata.update_column(col, sdtype="numerical")
+        metadata = _sdv.metadata_for(
+            real_data,
+            categorical=list(categorical_columns) + list(ordinal_columns),
+            numerical=continuous_columns,
+        )
 
         self._model = GaussianCopulaSynthesizer(metadata=metadata)
 
@@ -78,7 +72,7 @@ class GaussianCopulaGenerator(BaseGenerator):
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            self._model.fit(real_data)
+            _sdv.fit(self._model, real_data)
 
         self._is_fitted = True
 
@@ -90,7 +84,7 @@ class GaussianCopulaGenerator(BaseGenerator):
         if self.random_state is not None:
             np.random.seed(self.random_state)
 
-        synthetic = self._model.sample(num_rows=n_samples)
+        synthetic = _sdv.sample(self._model, n_samples)
 
         # Ensure column order matches original data
         final_cols = [c for c in self._all_columns if c in synthetic.columns]

@@ -28,22 +28,75 @@ The `requires_data` attribute indicates which transformed DataFrame(s) the metri
     - "both": Both DataFrames (will receive df_full = concat of cat + num)
 """
 
+import warnings
 from abc import ABC, abstractmethod
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
 
 from metis.domain.entities import MetricResult
-from metis.shared.normalization import (
-    METRIC_NORMALIZATION_MAP,
-    NormalizationType,
-    normalize_metric_value,
-)
+from metis.shared.normalization import normalize_metric_value
 from metis.shared.results import ColumnMetricResult
 
 # type for requires_data attribute
 DataRequirement = Literal["cat", "num", "both"]
+
+# Suffix the caster gives to the numeric shadow of an ordinal column.
+ORDINAL_SHADOW_SUFFIX = "__ord"
+
+
+def standardise_with_missingness(
+    X: np.ndarray, Y: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Joint-distribution view of two numeric tables that may have gaps.
+
+    Both tables are z-scored with the real (``X``) mean and standard
+    deviation of the observed values; a gap becomes 0 (the real mean) and
+    every column with a gap in either table gets a 0/1 missingness indicator,
+    so the rows keep their observed values and the pattern of gaps is part of
+    the joint distribution (the same encoding as the privacy metrics'
+    ``MixedRecordEncoder``).  The rows with any gap used to be dropped, which
+    left a small, biased subset when gaps were spread over many columns.
+    Without gaps the result is the former standardisation exactly.
+
+    Returns ``(X_std, Y_std, n_indicators)``.
+    """
+    X = np.asarray(X, dtype=float)
+    Y = np.asarray(Y, dtype=float)
+    mx, my = np.isnan(X), np.isnan(Y)
+    with warnings.catch_warnings():  # an all-missing real column: mean/std of nothing
+        warnings.simplefilter("ignore", RuntimeWarning)
+        mean = np.nanmean(X, axis=0)
+        std = np.nanstd(X, axis=0)
+    mean = np.where(np.isfinite(mean), mean, 0.0)
+    std = np.where(np.isfinite(std), std, 1.0) + 1e-10
+    Xs = np.where(mx, 0.0, (X - mean) / std)
+    Ys = np.where(my, 0.0, (Y - mean) / std)
+    gaps = mx.any(axis=0) | my.any(axis=0)
+    if gaps.any():
+        Xs = np.hstack([Xs, mx[:, gaps].astype(float)])
+        Ys = np.hstack([Ys, my[:, gaps].astype(float)])
+    return Xs, Ys, int(gaps.sum())
+
+
+def relative_difference(diff: float, *scales: float) -> float:
+    """``|diff|`` in units of the first positive reference scale of the real column.
+
+    ``scales`` are tried in order (e.g. IQR, then standard deviation): a
+    zero-inflated column has IQR 0 but a positive standard deviation. When
+    every scale is 0 the real column is constant and any difference is total:
+    0 if there is none, ``inf`` otherwise. The value never depends on the unit
+    of the column (dividing by nothing used to return the raw difference, so
+    the score of a constant or zero-inflated column changed with its unit).
+    """
+    diff = abs(float(diff))
+    for raw_scale in scales:
+        scale = float(raw_scale)
+        if np.isfinite(scale) and scale > 0:
+            return diff / scale
+    return 0.0 if diff == 0 else float("inf")
 
 
 class BaseFidelityMetric(ABC):
@@ -74,7 +127,7 @@ class BaseFidelityMetric(ABC):
 
     def fit(
         self, real_data: pd.DataFrame, synth_data: pd.DataFrame, context: dict | None = None
-    ) -> "BaseFidelityMetric":
+    ) -> BaseFidelityMetric:
         """
         Initialize with data.
 
@@ -96,13 +149,67 @@ class BaseFidelityMetric(ABC):
         """Hook for subclasses to perform additional setup after fit."""
         return
 
-    def _get_numeric_columns(self) -> list[str]:
-        """Get common numeric columns between real and synthetic data."""
+    @property
+    def metric_id(self) -> str:
+        """Fully-qualified id used by the central normalization registry."""
+        return f"fidelity.{self.name}"
+
+    @property
+    def seed(self) -> int:
+        """Seed from the execution context (42 when none was given)."""
+        seed = self._context.get("seed")
+        return 42 if seed is None else int(seed)
+
+    def _cached(self, frame: pd.DataFrame, key: str, compute_fn: Callable[[], Any]) -> Any:
+        """Memoise ``compute_fn`` in the shared ``StatsStore`` of the context.
+
+        The key is tied to the identity of ``frame`` (the same transformed slice is
+        handed to every metric of a run), and the frame itself is stored next to
+        the value: a hit is only accepted when it refers to the very same object,
+        so a store that outlives its data can never return a stale value.
+        Without a store the value is simply computed.
+        """
+        store = self._context.get("stats_store")
+        if store is None:
+            return compute_fn()
+        full_key = f"fidelity|{id(frame)}|{key}"
+        cached_frame, value = store.get_or_compute(full_key, lambda: (frame, compute_fn()))
+        if cached_frame is not frame:
+            return compute_fn()
+        return value
+
+    @staticmethod
+    def _ordinal_shadows(columns: set[str]) -> set[str]:
+        """Numeric ``<col>__ord`` shadows whose categorical twin is also present.
+
+        Ordinal columns reach the ``full`` slice twice (categorical and
+        ``__ord``). When both are present the shadow is dropped so the column is
+        neither counted twice nor paired with itself.
+        """
+        n = len(ORDINAL_SHADOW_SUFFIX)
+        return {
+            c
+            for c in columns
+            if isinstance(c, str) and c.endswith(ORDINAL_SHADOW_SUFFIX) and c[:-n] in columns
+        }
+
+    def _get_numeric_columns(self, include_ordinal_ranks: bool = False) -> list[str]:
+        """Get common numeric columns between real and synthetic data.
+
+        The rank view ``<col>__ord`` of an ordinal is left out when its
+        categorical twin is present (the metric then sees the ordinal through
+        the twin) unless *include_ordinal_ranks*: metrics that only look at
+        numeric columns and measure distances or order (MMD, energy, outliers)
+        must see the ordinal through its rank, or they ignore it altogether.
+        """
         if self._real_data is None or self._synth_data is None:
             return []
         real_num = set(self._real_data.select_dtypes(include=[np.number]).columns)
         synth_num = set(self._synth_data.select_dtypes(include=[np.number]).columns)
-        return sorted(real_num & synth_num)
+        common = set(self._real_data.columns) & set(self._synth_data.columns)
+        if include_ordinal_ranks:
+            return sorted(real_num & synth_num)
+        return sorted((real_num & synth_num) - self._ordinal_shadows(common))
 
     def _get_categorical_columns(self) -> list[str]:
         """Get common categorical columns between real and synthetic data."""
@@ -116,7 +223,12 @@ class BaseFidelityMetric(ABC):
         """Get all common columns between real and synthetic data."""
         if self._real_data is None or self._synth_data is None:
             return []
-        return sorted(set(self._real_data.columns) & set(self._synth_data.columns))
+        common = set(self._real_data.columns) & set(self._synth_data.columns)
+        return sorted(common - self._ordinal_shadows(common))
+
+    def _pair_categorical_columns(self) -> list[str]:
+        """Categorical columns for pair metrics."""
+        return self._get_categorical_columns()
 
 
 # =============================================================================
@@ -128,8 +240,12 @@ class ColumnFidelityMetric(BaseFidelityMetric):
     """
     Base class for per-column fidelity metrics.
 
-    Computes a metric for each applicable column independently,
-    then normalizes across all columns using robust percentiles.
+    Computes a metric for each applicable column independently and normalizes
+    each one on an absolute scale with the central registry
+    (``normalize_metric_value("fidelity.<name>", value)``). Scale-dependent raw
+    values are first made scale-free by ``_scale_free_value`` (e.g. a
+    Wasserstein distance is divided by the real column's standard deviation),
+    so a column's score never depends on how the other columns did.
 
     Subclasses must implement:
         - _compute_column(): Compute raw metric for a single column
@@ -156,6 +272,14 @@ class ColumnFidelityMetric(BaseFidelityMetric):
         """
         pass
 
+    def _scale_free_value(self, raw_value: float, real_col: pd.Series) -> float:  # noqa: ARG002
+        """Express ``raw_value`` in units that do not depend on the column scale.
+
+        Default: the raw value is already scale-free (KS, KL on bins, ...).
+        Metrics measured in the units of the column override this.
+        """
+        return raw_value
+
     @abstractmethod
     def _compute_column(self, real_col: pd.Series, synth_col: pd.Series) -> float:
         """
@@ -180,123 +304,96 @@ class ColumnFidelityMetric(BaseFidelityMetric):
         if self._real_data is None or self._synth_data is None:
             raise ValueError("Must call fit() before compute_all_columns()")
 
-        raw_values = {}
+        metric_id = self.metric_id
+        self._scale_free_values: dict[str, float] = {}
+        # Columns the real table barely observes (all or all-but-one missing):
+        # there is no real marginal to compare with, the column does not apply.
+        self._unobserved_columns: list[str] = []
 
-        # First pass: compute raw values for all columns
         for col in self._columns:
             try:
+                # Each column with its observed values.
                 real_col = self._real_data[col].dropna()
                 synth_col = self._synth_data[col].dropna()
 
-                if len(real_col) < 2 or len(synth_col) < 2:
+                if len(real_col) < 2:
+                    self._unobserved_columns.append(col)
+                    self._results[col] = ColumnMetricResult.invalid(
+                        col, "Real column has fewer than 2 observed values (not applicable)"
+                    )
+                    continue
+                if len(synth_col) < 2:
                     self._results[col] = ColumnMetricResult.invalid(col, "Insufficient data points")
                     continue
 
-                raw_value = self._compute_column(real_col, synth_col)
-                raw_values[col] = raw_value
+                raw_value = float(self._compute_column(real_col, synth_col))
+                if np.isnan(raw_value):
+                    self._results[col] = ColumnMetricResult.invalid(col, "Raw value is NaN")
+                    continue
+                scale_free = float(self._scale_free_value(raw_value, real_col))
+                normalized = float(normalize_metric_value(metric_id, scale_free))
+                if np.isnan(normalized):
+                    self._results[col] = ColumnMetricResult.invalid(
+                        col, f"Normalization returned NaN (raw={raw_value})"
+                    )
+                    continue
+                self._scale_free_values[col] = scale_free
+                self._results[col] = ColumnMetricResult(
+                    column=col,
+                    raw_value=raw_value,
+                    normalized_value=normalized,
+                    is_valid=True,
+                )
 
             except Exception as e:
                 self._results[col] = ColumnMetricResult.invalid(col, str(e))
 
-        # Second pass: normalize using metric-specific normalization
-        if raw_values:
-            # Use the full metric ID for proper normalization lookup
-            metric_id = f"fidelity.{self.name}"
-            # Use the is_distance attribute to flip values if needed
-            normalized = self._normalize_column_values(raw_values, metric_id)
-
-            for col, raw_value in raw_values.items():
-                self._results[col] = ColumnMetricResult(
-                    column=col,
-                    raw_value=raw_value,
-                    normalized_value=normalized[col],
-                    is_valid=True,
-                )
-
         return self._results
 
-    def _normalize_column_values(
-        self, raw_values: dict[str, float], metric_id: str
-    ) -> dict[str, float]:
+    def compute(self) -> MetricResult:
         """
-        Normalize column values using metric-specific normalization.
+        Compute the metric for all applicable columns and return a MetricResult.
 
-        For bounded metrics (ks, hellinger, tvd, js): 1 - value
-        For unbounded metrics (wasserstein, kl, etc): robust normalization
-
-        Args:
-            raw_values: Dictionary of column names to raw values
-            metric_id: Full metric ID (e.g., "fidelity.ks")
-
-        Returns:
-            Dictionary of normalized values in [0, 1]
+        The value is the mean normalized score of the valid columns. When no
+        column could be scored the value is NaN and ``details["error"]`` says
+        why, so the aggregator excludes it instead of reading a silent 0.
         """
+        results = self.compute_all_columns()
+        normalized_scores = [r.normalized_value for r in results.values() if r.is_valid]
 
-        if not raw_values:
-            return {}
+        details: dict[str, Any] = {}
+        for col, res in results.items():
+            entry = res.to_dict()
+            if col in self._scale_free_values:
+                entry["scale_free_value"] = self._scale_free_values[col]
+            details[col] = entry
 
-        # Check if this metric uses UNBOUNDED_DISTANCE normalization
-        norm_type = METRIC_NORMALIZATION_MAP.get(metric_id)
+        if not self._columns:
+            return MetricResult.not_applicable(
+                self.metric_id, "fidelity", f"{self.metric_id}: no column of the type it measures"
+            )
+        if not normalized_scores and len(self._unobserved_columns) == len(self._columns):
+            return MetricResult.not_applicable(
+                self.metric_id,
+                "fidelity",
+                f"{self.metric_id}: no column observed in the real data "
+                f"({len(self._columns)} candidate(s), all missing)",
+            )
+        if normalized_scores:
+            value = float(np.mean(normalized_scores))
+        else:
+            value = float("nan")
+            details["error"] = (
+                f"No valid columns for {self.metric_id} ({len(self._columns)} applicable, 0 scored)"
+            )
 
-        if norm_type == NormalizationType.UNBOUNDED_DISTANCE:
-            # For unbounded metrics, use robust percentile-based normalization
-            # to handle arbitrary scales
-            return self._normalize_unbounded_robust(raw_values)
-        # For bounded/similarity/delta metrics, use direct normalization
-        return {col: normalize_metric_value(metric_id, value) for col, value in raw_values.items()}
-
-    def _normalize_unbounded_robust(self, raw_values: dict[str, float]) -> dict[str, float]:
-        """
-        Robust normalization for unbounded distance metrics.
-
-        Uses percentile-based scaling to handle arbitrary value ranges.
-        Lower values = better for distance metrics.
-
-        Args:
-            raw_values: Dictionary of column names to raw values
-
-        Returns:
-            Dictionary of normalized values in [0, 1] where 1 = best
-        """
-        if not raw_values:
-            return {}
-
-        all_values = np.array(list(raw_values.values()))
-        valid_values = all_values[~np.isnan(all_values)]
-
-        if len(valid_values) == 0:
-            return dict.fromkeys(raw_values, 0.0)
-
-        # Use robust percentiles to determine scale
-        p_min = np.percentile(valid_values, 5)
-        p_max = np.percentile(valid_values, 95)
-
-        # Avoid division by zero
-        if p_max - p_min < 1e-10:
-            # All values are essentially the same
-            # For distance metrics: if all values are near zero, it's perfect (1.0)
-            # Otherwise, it's a neutral score (0.5)
-            if p_max < 1e-6:  # All values are near zero = perfect match
-                return dict.fromkeys(raw_values, 1.0)
-            # All values are the same but non-zero = neutral
-            return dict.fromkeys(raw_values, 0.5)
-
-        normalized = {}
-        for col, raw_value in raw_values.items():
-            if np.isnan(raw_value):
-                normalized[col] = 0.0
-                continue
-
-            # Scale to [0, 1] using robust percentiles
-            norm_val = (raw_value - p_min) / (p_max - p_min)
-            norm_val = np.clip(norm_val, 0.0, 1.0)
-
-            # For distance metrics, invert (lower is better → higher score)
-            norm_val = 1.0 - norm_val
-
-            normalized[col] = float(norm_val)
-
-        return normalized
+        return MetricResult(
+            id=self.metric_id,
+            value=value,
+            details=details,
+            family="fidelity",
+            purpose_tags=set(),
+        )
 
     def get_normalized_scores(self) -> dict[str, float]:
         """
@@ -339,52 +436,6 @@ class NumericColumnMetric(ColumnFidelityMetric):
         """Get numeric columns only."""
         return self._get_numeric_columns()
 
-    def fit(
-        self,
-        real_data: pd.DataFrame,
-        synth_data: pd.DataFrame,
-        context=None,  # noqa: ARG002 - context ignored for interface compatibility
-    ) -> "NumericColumnMetric":
-        """
-        Initialize with data.
-
-        Args:
-            real_data: Original dataset
-            synth_data: Synthetic dataset
-            context: Ignored, for interface compatibility
-
-        Returns:
-            Self for method chaining
-        """
-        return super().fit(real_data, synth_data)
-
-    def compute(self) -> "MetricResult":
-        """
-        Compute the metric for all applicable columns and return a MetricResult.
-
-        Returns:
-            MetricResult with the mean normalized score as value, and details per column.
-        """
-        results = self.compute_all_columns()
-
-        # Get normalized scores for valid columns
-        normalized_scores = [r.normalized_value for r in results.values() if r.is_valid]
-
-        # Aggregate: mean normalized score, or 0.0 if none valid
-        value = float(np.mean(normalized_scores)) if normalized_scores else 0.0
-
-        # Prepare details: dict of column -> result dict
-        details = {col: res.to_dict() for col, res in results.items()}
-
-        # Return MetricResult as expected by orchestrator
-        return MetricResult(
-            id=self.name,
-            value=value,
-            details=details,
-            family="fidelity",
-            purpose_tags=set(),
-        )
-
 
 class CategoricalColumnMetric(ColumnFidelityMetric):
     """
@@ -419,52 +470,6 @@ class UniversalColumnMetric(ColumnFidelityMetric):
     def _get_applicable_columns(self) -> list[str]:
         """Get all common columns."""
         return self._get_all_columns()
-
-    def fit(
-        self,
-        real_data: pd.DataFrame,
-        synth_data: pd.DataFrame,
-        context=None,  # noqa: ARG002 - context ignored for interface compatibility
-    ) -> "UniversalColumnMetric":
-        """
-        Initialize with data.
-
-        Args:
-            real_data: Original dataset
-            synth_data: Synthetic dataset
-            context: Ignored, for interface compatibility
-
-        Returns:
-            Self for method chaining
-        """
-        return super().fit(real_data, synth_data)
-
-    def compute(self) -> "MetricResult":
-        """
-        Compute the metric for all applicable columns and return a MetricResult.
-
-        Returns:
-            MetricResult with the mean normalized score as value, and details per column.
-        """
-        results = self.compute_all_columns()
-
-        # Get normalized scores for valid columns
-        normalized_scores = [r.normalized_value for r in results.values() if r.is_valid]
-
-        # Aggregate: mean normalized score, or 0.0 if none valid
-        value = float(np.mean(normalized_scores)) if normalized_scores else 0.0
-
-        # Prepare details: dict of column -> result dict
-        details = {col: res.to_dict() for col, res in results.items()}
-
-        # Return MetricResult as expected by orchestrator
-        return MetricResult(
-            id=self.name,
-            value=value,
-            details=details,
-            family="fidelity",
-            purpose_tags=set(),
-        )
 
 
 # =============================================================================
@@ -522,26 +527,30 @@ class PairFidelityMetric(BaseFidelityMetric):
         """Identify applicable pairs on fit."""
         self._pairs = self._get_applicable_pairs()
 
-    def fit(
-        self,
-        real_data: pd.DataFrame,
-        synth_data: pd.DataFrame,
-        context=None,  # noqa: ARG002 - context ignored for interface compatibility
-    ) -> "PairFidelityMetric":
+    def _prepare_pairs(self) -> None:
+        """Hook run once before the pair loop to precompute shared statistics.
+
+        Subclasses use it to compute everything that does not depend on the
+        pair (a correlation matrix, per-column centred distance matrices...).
         """
-        Initialize with data.
+        return
 
-        Args:
-            real_data: Original dataset
-            synth_data: Synthetic dataset
-            context: Ignored, for interface compatibility
+    @staticmethod
+    def _pair_view(
+        frame: pd.DataFrame, c1: str, c2: str, complete: dict[str, bool]
+    ) -> tuple[pd.Series, pd.Series]:
+        """Both columns restricted to the rows where the two are observed.
 
-        Returns:
-            Self for method chaining
+        When neither column has missing values the columns are returned as-is
+        (no ``dropna``/``intersection``/``.loc`` per pair).
         """
-        return super().fit(real_data, synth_data)
+        col1, col2 = frame[c1], frame[c2]
+        if complete[c1] and complete[c2]:
+            return col1, col2
+        mask = col1.notna().to_numpy() & col2.notna().to_numpy()
+        return col1[mask], col2[mask]
 
-    def compute(self) -> "MetricResult":
+    def compute(self) -> MetricResult:
         """
         Compute the metric for all applicable pairs and return a MetricResult.
 
@@ -552,41 +561,50 @@ class PairFidelityMetric(BaseFidelityMetric):
             raise ValueError("Must call fit() before compute()")
 
         normalized_scores = []
-        details = {}
+        details: dict[str, Any] = {}
         skipped_count = 0
         error_count = 0
+
+        # Per-column facts computed once instead of once per pair.
+        cols = sorted({c for pair in self._pairs for c in pair})
+        real_complete = self._real_data[cols].notna().all().to_dict() if cols else {}
+        synth_complete = self._synth_data[cols].notna().all().to_dict() if cols else {}
+        num_cols = [c for c in cols if pd.api.types.is_numeric_dtype(self._real_data[c])]
+        num_set = set(num_cols)
+        real_std = self._real_data[num_cols].std().to_dict() if num_cols else {}
+        synth_std = self._synth_data[num_cols].std().to_dict() if num_cols else {}
+
+        def _std(col: pd.Series, name: str, full: bool, cache: dict[str, float]) -> float:
+            return cache[name] if full else col.std()
+
+        self._prepare_pairs()
 
         for c1, c2 in self._pairs:
             pair_key = f"{c1}|{c2}"
             try:
-                real_col1 = self._real_data[c1].dropna()
-                real_col2 = self._real_data[c2].dropna()
-                synth_col1 = self._synth_data[c1].dropna()
-                synth_col2 = self._synth_data[c2].dropna()
+                real_col1, real_col2 = self._pair_view(self._real_data, c1, c2, real_complete)
+                synth_col1, synth_col2 = self._pair_view(self._synth_data, c1, c2, synth_complete)
+                both_real = real_complete[c1] and real_complete[c2]
+                both_synth = synth_complete[c1] and synth_complete[c2]
 
-                # Get common indices after dropna
-                real_idx = real_col1.index.intersection(real_col2.index)
-                synth_idx = synth_col1.index.intersection(synth_col2.index)
-
-                if len(real_idx) < 10 or len(synth_idx) < 10:
+                if len(real_col1) < 10 or len(synth_col1) < 10:
                     skipped_count += 1
                     details[pair_key] = {
                         "skipped": True,
-                        "reason": f"Insufficient data (real={len(real_idx)}, synth={len(synth_idx)})",
+                        "reason": f"Insufficient data (real={len(real_col1)}, synth={len(synth_col1)})",
                     }
                     continue
 
                 # Check for constant columns (zero variance causes NaN correlations)
                 # Only check for numeric columns - categorical columns don't have std()
-                is_numeric_c1 = pd.api.types.is_numeric_dtype(real_col1)
-                is_numeric_c2 = pd.api.types.is_numeric_dtype(real_col2)
+                is_numeric_c1 = c1 in num_set
+                is_numeric_c2 = c2 in num_set
 
                 if is_numeric_c1 and is_numeric_c2:
-                    # For numeric-numeric pairs, check std
-                    real_c1_std = real_col1.loc[real_idx].std()
-                    real_c2_std = real_col2.loc[real_idx].std()
-                    synth_c1_std = synth_col1.loc[synth_idx].std()
-                    synth_c2_std = synth_col2.loc[synth_idx].std()
+                    real_c1_std = _std(real_col1, c1, both_real, real_std)
+                    real_c2_std = _std(real_col2, c2, both_real, real_std)
+                    synth_c1_std = _std(synth_col1, c1, both_synth, synth_std)
+                    synth_c2_std = _std(synth_col2, c2, both_synth, synth_std)
 
                     if real_c1_std == 0 or real_c2_std == 0:
                         skipped_count += 1
@@ -606,14 +624,15 @@ class PairFidelityMetric(BaseFidelityMetric):
 
                 elif is_numeric_c1 or is_numeric_c2:
                     # For num-cat pairs, only check the numeric column
-                    num_col_real = real_col1 if is_numeric_c1 else real_col2
-                    num_col_synth = synth_col1 if is_numeric_c1 else synth_col2
                     num_name = c1 if is_numeric_c1 else c2
+                    real_std_v = _std(
+                        real_col1 if is_numeric_c1 else real_col2, num_name, both_real, real_std
+                    )
+                    synth_std_v = _std(
+                        synth_col1 if is_numeric_c1 else synth_col2, num_name, both_synth, synth_std
+                    )
 
-                    real_std = num_col_real.loc[real_idx].std()
-                    synth_std = num_col_synth.loc[synth_idx].std()
-
-                    if real_std == 0:
+                    if real_std_v == 0:
                         skipped_count += 1
                         details[pair_key] = {
                             "skipped": True,
@@ -621,7 +640,7 @@ class PairFidelityMetric(BaseFidelityMetric):
                         }
                         continue
 
-                    if synth_std == 0:
+                    if synth_std_v == 0:
                         skipped_count += 1
                         details[pair_key] = {
                             "skipped": True,
@@ -634,10 +653,10 @@ class PairFidelityMetric(BaseFidelityMetric):
                 # (e.g., Cramer's V will be 0 if one column has only 1 category)
 
                 real_val, synth_val = self._compute_pair(
-                    real_col1.loc[real_idx],
-                    real_col2.loc[real_idx],
-                    synth_col1.loc[synth_idx],
-                    synth_col2.loc[synth_idx],
+                    real_col1,
+                    real_col2,
+                    synth_col1,
+                    synth_col2,
                 )
 
                 # Check for NaN results
@@ -665,11 +684,25 @@ class PairFidelityMetric(BaseFidelityMetric):
                 error_count += 1
                 details[pair_key] = {"error": str(e)}
 
+        if not normalized_scores and error_count == 0:
+            # No pair of the right types, or every pair skipped as outside the
+            # metric's domain (e.g. point-biserial needs a binary column).
+            return MetricResult.not_applicable(
+                self.metric_id,
+                "fidelity",
+                f"{self.metric_id}: no column pair it applies to "
+                f"({len(self._pairs)} candidate(s), {skipped_count} skipped)",
+                _summary={"total_pairs": len(self._pairs), "skipped_pairs": skipped_count},
+            )
         # Compute aggregate value (only from valid scores)
         if normalized_scores:
             value = float(np.mean(normalized_scores))
         else:
             value = float("nan")
+            details["error"] = (
+                f"No valid pairs for {self.metric_id} ({len(self._pairs)} applicable, "
+                f"{skipped_count} skipped, {error_count} errored)"
+            )
 
         # Add summary statistics
         total_pairs = len(self._pairs)
@@ -680,11 +713,10 @@ class PairFidelityMetric(BaseFidelityMetric):
             "skipped_pairs": skipped_count,
             "error_pairs": error_count,
             "coverage_pct": (round(100 * valid_pairs / total_pairs, 1) if total_pairs > 0 else 0.0),
-            "not_applicable": valid_pairs == 0,
         }
 
         return MetricResult(
-            id=self.name,
+            id=self.metric_id,
             value=value,
             details=details,
             family="fidelity",
@@ -734,11 +766,7 @@ class PairFidelityMetric(BaseFidelityMetric):
         """
         if self.pair_delta_normalization == "linear_clip":
             return 1.0 - min(float(delta), 1.0)
-        # Lazy import to avoid a circular dependency: normalization.py is in
-        # ``metis.shared`` which is imported widely at startup.
-        from metis.shared.normalization import normalize_metric_value
-
-        return float(normalize_metric_value(self.name, float(delta)))
+        return float(normalize_metric_value(self.metric_id, float(delta)))
 
 
 class NumNumPairMetric(PairFidelityMetric):
@@ -766,10 +794,39 @@ class NumCatPairMetric(PairFidelityMetric):
     requires_data: DataRequirement = "both"
 
     def _get_applicable_pairs(self) -> list[tuple[str, str]]:
-        """Get all numeric-categorical pairs."""
+        """Numeric-categorical pairs, an ordinal counted once per pair of variables.
+
+        An ordinal is paired with the numeric columns through its level
+        (groups of the numeric column by level), and with the nominal
+        columns through its rank ``<col>__ord`` (the rank grouped by the
+        nominal categories, which keeps its order; as two categoricals that
+        pair is already scored by the cat-cat metrics).  Pairs of two
+        ordinals are scored by the num-num metrics on their ranks.
+        """
         numeric_cols = self._get_numeric_columns()
-        categorical_cols = self._get_categorical_columns()
-        return [(n, c) for n in numeric_cols for c in categorical_cols]
+        categorical_cols = self._pair_categorical_columns()
+        pairs = [(n, c) for n in numeric_cols for c in categorical_cols]
+        common = set(self._real_data.columns) & set(self._synth_data.columns)
+        ranks = sorted(self._ordinal_shadows(common))
+        twins = {r[: -len(ORDINAL_SHADOW_SUFFIX)] for r in ranks}
+        nominal = [c for c in categorical_cols if c not in twins]
+        pairs += [(r, c) for r in ranks for c in nominal]
+        return pairs
+
+    @staticmethod
+    def _groups(num_col: pd.Series, cat_col: pd.Series, min_size: int = 2) -> list[np.ndarray]:
+        """Values of ``num_col`` split by the categories of ``cat_col``.
+
+        Same groups as ``DataFrame.groupby(cat)`` (groups smaller than
+        ``min_size`` dropped) built with ``factorize`` + one ``argsort`` instead
+        of a DataFrame and a groupby per pair.
+        """
+        codes, uniques = pd.factorize(cat_col, sort=True)
+        values = num_col.to_numpy(dtype=float)
+        order = np.argsort(codes, kind="stable")
+        counts = np.bincount(codes, minlength=len(uniques))
+        groups = np.split(values[order], np.cumsum(counts)[:-1])
+        return [g for g in groups if len(g) >= min_size]
 
 
 class CatCatPairMetric(PairFidelityMetric):
@@ -783,15 +840,39 @@ class CatCatPairMetric(PairFidelityMetric):
 
     def _get_applicable_pairs(self) -> list[tuple[str, str]]:
         """Get all categorical-categorical pairs."""
-        categorical_cols = self._get_categorical_columns()
+        categorical_cols = self._pair_categorical_columns()
         return [
             (c1, c2) for i, c1 in enumerate(categorical_cols) for c2 in categorical_cols[i + 1 :]
         ]
+
+    def _contingency(self, side: str, col1: pd.Series, col2: pd.Series) -> np.ndarray:
+        """Contingency table of two categorical columns (same as ``pd.crosstab``).
+
+        Built with ``factorize`` + ``bincount`` and shared through the
+        ``StatsStore``: Cramér's V, Theil's U and chi² ask for the very same
+        tables. Only complete columns (no rows dropped for the pair) are cached.
+        """
+        frame = self._real_data if side == "real" else self._synth_data
+
+        def build() -> np.ndarray:
+            codes1, uniques1 = pd.factorize(col1, sort=True)
+            codes2, uniques2 = pd.factorize(col2, sort=True)
+            k1, k2 = len(uniques1), len(uniques2)
+            counts = np.bincount(codes1 * k2 + codes2, minlength=k1 * k2)
+            return counts.reshape(k1, k2)
+
+        if frame is None or len(col1) != len(frame):
+            return build()
+        return self._cached(frame, f"contingency|{col1.name}|{col2.name}", build)
 
 
 # =============================================================================
 # Global-level metrics
 # =============================================================================
+
+
+class GlobalMetricNotApplicable(ValueError):
+    """Raised by ``_compute_global`` when the tables have nothing the metric can measure."""
 
 
 class GlobalFidelityMetric(BaseFidelityMetric):
@@ -806,26 +887,7 @@ class GlobalFidelityMetric(BaseFidelityMetric):
 
     requires_data: DataRequirement = "both"
 
-    def fit(
-        self,
-        real_data: pd.DataFrame,
-        synth_data: pd.DataFrame,
-        context=None,  # noqa: ARG002 - context ignored for interface compatibility
-    ) -> "GlobalFidelityMetric":
-        """
-        Initialize with data.
-
-        Args:
-            real_data: Original dataset
-            synth_data: Synthetic dataset
-            context: Ignored, for interface compatibility
-
-        Returns:
-            Self for method chaining
-        """
-        return super().fit(real_data, synth_data)
-
-    def compute(self) -> "MetricResult":
+    def compute(self) -> MetricResult:
         """
         Compute the global metric and return a MetricResult.
 
@@ -839,16 +901,19 @@ class GlobalFidelityMetric(BaseFidelityMetric):
             raw_value, normalized_value, details = self._compute_global()
 
             return MetricResult(
-                id=self.name,
+                id=self.metric_id,
                 value=normalized_value,
                 details=details,
                 family="fidelity",
                 purpose_tags=set(),
             )
 
+        except GlobalMetricNotApplicable as e:
+            # Nothing to measure (e.g. no numeric column): not a failure.
+            return MetricResult.not_applicable(self.metric_id, "fidelity", str(e), set())
         except Exception as e:
             return MetricResult(
-                id=self.name,
+                id=self.metric_id,
                 value=float("nan"),
                 details={"error": str(e)},
                 family="fidelity",

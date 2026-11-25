@@ -1,47 +1,172 @@
 """
-CatBoost model trainer with Optuna optimization.
+CatBoost model trainer: CatBoost defaults with early stopping, no search.
 
 Provides the common ML model logic used by both classification
 and regression efficiency metrics.
 Supports native categorical features in CatBoost.
+
+Why no hyperparameter search
+----------------------------
+Utility is the *difference* TTR − TSTR between two models trained the same
+way, not the absolute performance of one.  The gain that tuning brings over
+CatBoost's defaults is modest on tabular data (McElfresh et al., 2023;
+Erickson et al., 2025, TabArena) and largely cancels in that difference.
+The Optuna search it replaces was not deterministic with parallel trials
+(the same seed moved the score by up to 0.045), with 10 trials it was in
+practice a random search over a hand-picked space, and reusing the tuning of
+the first split on the others leaked a little of the TTR test rows.
+
+Protocol per train/test split:
+
+1. Fit CatBoost with its defaults (``MAX_ITERATIONS`` trees, learning rate
+   chosen by CatBoost from the data size) on 80 % of the *training* rows and
+   stop early on the other 20 %.  The test rows never take part.
+2. Refit ``n_runs`` models on all the training rows with the number of trees
+   that early stopping chose and the learning rate CatBoost picked in step 1
+   (pinned: with fewer trees CatBoost would choose a larger one).
 """
 
 import os
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from typing import Any
 
 import numpy as np
-import optuna
 import pandas as pd
 from catboost import CatBoostClassifier, CatBoostRegressor
-from sklearn.metrics import f1_score, mean_absolute_error
-from sklearn.multioutput import MultiOutputClassifier
+from sklearn.metrics import mean_absolute_error, roc_auc_score
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-# Silence Optuna logs
-optuna.logging.set_verbosity(optuna.logging.WARNING)
+from metis.infrastructure.metrics.base import _env_int
+
+# Early stopping is scored on a validation slice carved out of the *training*
+# data; the test set is only used for the final score (U2).
+VALIDATION_FRACTION = 0.2
+# Below this many training rows there is no room for a validation slice: the
+# model is then fitted with CatBoost's defaults and no early stopping.
+MIN_ROWS_FOR_VALIDATION = 10
+# CatBoost's own default number of trees; early stopping cuts it.
+MAX_ITERATIONS = 1000
+# Patience, in trees.  Longer than CatBoost's ``od_wait`` default (20): the
+# validation slice is small (20 % of a few hundred rows) and its loss noisy,
+# so a short patience can stop on a fluctuation.  Costs at most 50 extra trees.
+EARLY_STOPPING_ROUNDS = 50
+# Categorical columns with up to 10 levels are one-hot encoded instead of
+# target statistics (CTR), which were ~90 % of the cost of a fit on a few
+# hundred rows.  The only departure from CatBoost's defaults.
+ONE_HOT_MAX_SIZE = 10
+# Floor of the probability given to the true class by the log-loss: a model
+# that rules a class out (p = 0) would otherwise cost an infinite loss.
+LOG_LOSS_EPS = 1e-6
+
+
+class _ConstantClassifier:
+    """Predicts the only class seen in training (CatBoost refuses one class)."""
+
+    def __init__(self, label: Any):
+        self._label = label
+        self.classes_ = np.asarray([label])
+
+    def predict(self, X) -> np.ndarray:
+        return np.repeat(np.asarray([self._label]), len(X))
+
+    def predict_proba(self, X) -> np.ndarray:
+        return np.ones((len(X), 1))
+
+
+def macro_ovr_auc(y_true: np.ndarray, classes: np.ndarray, proba: np.ndarray) -> float:
+    """Macro one-vs-rest ROC AUC over the classes of *y_true*.
+
+    *proba* holds one column per entry of *classes* (the model's classes).  A
+    test class the model never saw scores a constant 0, i.e. AUC 0.5, as a
+    model without signal does; a class that is every test row is skipped
+    (no negatives to rank).  For a binary target both classes give the same
+    AUC, so the macro mean is the usual binary AUC.
+    """
+    y_true = np.asarray(y_true)
+    column = {str(c): j for j, c in enumerate(np.asarray(classes))}
+    aucs = []
+    for c in np.unique(y_true):
+        positive = y_true == c
+        if positive.all():
+            continue
+        j = column.get(str(c))
+        score = proba[:, j] if j is not None else np.zeros(len(y_true))
+        aucs.append(roc_auc_score(positive, score))
+    return float(np.mean(aucs)) if aucs else 0.5
+
+
+def multiclass_log_loss(y_true: np.ndarray, classes: np.ndarray, proba: np.ndarray) -> float:
+    """Mean ``−log p(true class)``, with ``p`` floored at ``LOG_LOSS_EPS``.
+
+    *proba* holds one column per entry of *classes* (the model's classes); a
+    test class the model never saw gets probability 0, i.e. the floor.
+    """
+    y_true = np.asarray(y_true)
+    column = {str(c): j for j, c in enumerate(np.asarray(classes))}
+    idx = np.array([column.get(str(v), -1) for v in y_true])
+    p = np.where(idx >= 0, proba[np.arange(len(y_true)), np.clip(idx, 0, None)], 0.0)
+    return float(-np.mean(np.log(np.clip(p, LOG_LOSS_EPS, 1.0))))
+
+
+def _fitted_learning_rate(model: Any) -> float | None:
+    """Learning rate CatBoost chose (or was given) for a fitted *model*."""
+    get_params = getattr(model, "get_all_params", None)
+    if not callable(get_params):
+        return None
+    rate = get_params().get("learning_rate")
+    return float(rate) if rate is not None else None
+
+
+def _best_iteration(model: Any) -> int | None:
+    get_best = getattr(model, "get_best_iteration", None)
+    best = get_best() if callable(get_best) else None
+    return int(best) if best is not None else None
 
 
 class CatBoostTrainer(ABC):
     """
-    Abstract CatBoost trainer with Optuna hyperparameter optimization.
+    Abstract CatBoost trainer: defaults with early stopping (module docstring).
 
-    Based on Gorishniy et al., 2021 configuration.
     Subclasses implement classification or regression specific logic.
     """
 
-    def __init__(self, n_trials: int = 100, n_runs: int = 3):
+    def __init__(self, n_runs: int = 3, thread_count: int | None = None):
         """
         Initialize trainer.
 
         Args:
-            n_trials: Number of Optuna trials for hyperparameter search
-            n_runs: Number of evaluation runs with best parameters
+            n_runs: Number of refits on the whole training set per split
+            thread_count: CatBoost threads per model. ``None`` derives it from
+                ``METIS_N_JOBS`` (see ``_threads``).
         """
-        self.n_trials = n_trials
         self.n_runs = n_runs
+        self.thread_count = thread_count
+
+    # ------------------------------------------------------------------
+    # Thread budget
+    # ------------------------------------------------------------------
+    # ``METIS_N_JOBS`` is the total thread budget of the process and every
+    # model gets all of it (models are fitted one after another; CatBoost
+    # gives the same model with 1 or N threads).  Without it CatBoost keeps
+    # its own default (all cores).  An explicit ``thread_count`` always wins.
+
+    @staticmethod
+    def _thread_budget() -> int:
+        # A malformed METIS_N_JOBS used to raise inside every strategy (NaN utility).
+        return max(1, _env_int("METIS_N_JOBS", 1))
+
+    def _threads(self) -> int:
+        if self.thread_count is not None:
+            return self.thread_count
+        return self._thread_budget() if "METIS_N_JOBS" in os.environ else -1
+
+    def _runtime_params(self) -> dict[str, Any]:
+        """Params that affect resources, never the fitted model."""
+        # allow_writing_files=False: no ``catboost_info/`` in the cwd, which
+        # parallel processes would otherwise race on.
+        return {"thread_count": self._threads(), "allow_writing_files": False}
 
     @abstractmethod
     def _get_model_class(self):
@@ -53,36 +178,15 @@ class CatBoostTrainer(ABC):
         """Compute the evaluation metric."""
         pass
 
-    @abstractmethod
-    def _optimization_direction(self) -> str:
-        """Return 'maximize' or 'minimize' for Optuna."""
-        pass
+    def _secondary_metrics(self, y_true: np.ndarray, y_pred: Any) -> dict[str, float]:
+        """Other scores of the same predictions (``last_secondary``); none by default."""
+        return {}
 
-    def _get_hyperparameter_space(self, trial: optuna.Trial, seed: int) -> dict[str, Any]:
-        """
-        Get hyperparameter search space based on Gorishniy et al., 2021.
-
-        Hyperparameters configuration:
-        - depth (max_depth): Uniform[3, 10] - Controls tree depth for complex interactions
-        - learning_rate: LogUniform[1e-5, 1] - Step size for gradient updates
-        - bagging_temperature: Uniform[0, 1] - Controls randomness in bagging
-        - l2_leaf_reg: LogUniform[1, 10] - L2 regularization on leaf weights
-        - leaf_estimation_iterations: Uniform[1, 10] - Number of gradient iterations per leaf
-        - n_estimators fixed at 100 for consistent tuning trials
-        """
+    def _base_params(self, seed: int) -> dict[str, Any]:
+        """CatBoost defaults plus the fixed choices documented above."""
         return {
-            "depth": trial.suggest_int("depth", 3, 10),  # Uniform[3, 10]
-            "learning_rate": trial.suggest_float(
-                "learning_rate", 1e-5, 1, log=True
-            ),  # LogUniform[1e-5, 1]
-            "bagging_temperature": trial.suggest_float(
-                "bagging_temperature", 0, 1
-            ),  # Uniform[0, 1]
-            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1, 10, log=True),  # LogUniform[1, 10]
-            "leaf_estimation_iterations": trial.suggest_int(
-                "leaf_estimation_iterations", 1, 10
-            ),  # Uniform[1, 10]
-            "iterations": 100,  # Number of tuning trials as per Gorishniy et al., 2021
+            "iterations": MAX_ITERATIONS,
+            "one_hot_max_size": ONE_HOT_MAX_SIZE,
             "random_seed": seed,
             "verbose": False,
         }
@@ -119,7 +223,9 @@ class CatBoostTrainer(ABC):
             # Get categorical column indices
             cat_indices = self._get_categorical_indices(X_train)
 
-            # Fill NaN for numeric columns with 0, categorical with 'missing'
+            # Categorical NaN is its own category ('missing'); numeric NaN is
+            # left as is: CatBoost handles it natively (``nan_mode="Min"``),
+            # where a fill with 0 made a gap look like a real value of 0.
             X_train_proc = X_train.copy()
             X_test_proc = X_test.copy()
 
@@ -131,48 +237,94 @@ class CatBoostTrainer(ABC):
                     # Use object dtype — CatBoost rejects StringArray
                     X_train_proc[col] = X_train_proc[col].fillna("missing").astype(object)
                     X_test_proc[col] = X_test_proc[col].fillna("missing").astype(object)
-                else:
-                    X_train_proc[col] = X_train_proc[col].fillna(0)
-                    X_test_proc[col] = X_test_proc[col].fillna(0)
 
             return X_train_proc, X_test_proc, cat_indices
         # Fallback for numpy arrays - scale and return
         scaler = StandardScaler()
         return scaler.fit_transform(X_train), scaler.transform(X_test), []
 
-    def _create_objective(
+    # ------------------------------------------------------------------
+    # Fitting
+    # ------------------------------------------------------------------
+    _stratify_validation = False
+
+    def _fit(
+        self,
+        params: dict[str, Any],
+        X: pd.DataFrame | np.ndarray,
+        y: np.ndarray,
+        eval_set: tuple | None = None,
+    ):
+        """Fit one model; with *eval_set*, stop early on it."""
+        model = self._get_model_class()(**params)
+        if eval_set is not None:
+            try:
+                model.fit(X, y, eval_set=eval_set, early_stopping_rounds=EARLY_STOPPING_ROUNDS)
+                return model
+            except Exception:  # e.g. a validation label unseen in training
+                model = self._get_model_class()(**params)
+        model.fit(X, y)
+        return model
+
+    def _validation_split(
+        self,
+        X: pd.DataFrame | np.ndarray,
+        y: np.ndarray,
+        seed: int,
+    ) -> tuple[Any, Any, np.ndarray, np.ndarray] | None:
+        """Split the training data into a fit part and a validation slice.
+
+        Returns ``(X_fit, X_val, y_fit, y_val)``, or ``None`` when the table is
+        too small for a slice.  Classification stratifies when every class
+        has at least two rows.
+        """
+        if len(X) < MIN_ROWS_FOR_VALIDATION:
+            return None
+        stratify = None
+        if self._stratify_validation and np.ndim(y) == 1:
+            _, counts = np.unique(np.asarray(y).astype(str), return_counts=True)
+            if len(counts) > 1 and counts.min() >= 2:
+                stratify = y
+        X_fit, X_val, y_fit, y_val = train_test_split(
+            X, y, test_size=VALIDATION_FRACTION, random_state=seed, stratify=stratify
+        )
+        if isinstance(X_fit, pd.DataFrame):
+            X_fit, X_val = X_fit.reset_index(drop=True), X_val.reset_index(drop=True)
+        return X_fit, X_val, y_fit, y_val
+
+    def _settle(self, model: Any, params: dict[str, Any]) -> dict[str, Any]:
+        """Final params from a model early-stopped with *params*."""
+        settled = dict(params)
+        best = _best_iteration(model)
+        if best is not None:
+            settled["iterations"] = best + 1
+        rate = _fitted_learning_rate(model)
+        if rate is not None:
+            settled["learning_rate"] = rate
+        return settled
+
+    def tune(
         self,
         X_train: pd.DataFrame | np.ndarray,
-        X_test: pd.DataFrame | np.ndarray,
         y_train: np.ndarray,
-        y_test: np.ndarray,
-        seed: int,
-        cat_features: list[int] = None,
-    ) -> Callable:
-        """Create Optuna objective function."""
-        # Prepare data once outside the objective
-        X_train_proc, X_test_proc, detected_cat_features = self._prepare_for_catboost(
-            X_train, X_test
-        )
-        cat_features = cat_features if cat_features is not None else detected_cat_features
-
-        def objective(trial: optuna.Trial) -> float:
-            params = self._get_hyperparameter_space(trial, seed)
-            if cat_features:
-                params["cat_features"] = cat_features
-
-            model = self._get_model_class()(**params)
-            model.fit(X_train_proc, y_train)
-            predictions = model.predict(X_test_proc)
-
-            metric = self._compute_metric(y_test, predictions)
-
-            # For minimization metrics, return negative
-            if self._optimization_direction() == "minimize":
-                return -metric
-            return metric
-
-        return objective
+        seed: int = 42,
+        cat_features: list[int] | None = None,
+    ) -> dict[str, Any]:
+        """Number of trees and learning rate, by early stopping on *X_train* only."""
+        params = self._base_params(seed)
+        X_proc, _, detected = self._prepare_for_catboost(X_train, X_train)
+        cat_features = cat_features if cat_features is not None else detected
+        split = self._validation_split(X_proc, y_train, seed)
+        if split is None:
+            return params
+        X_fit, X_val, y_fit, y_val = split
+        fit_params = {**params, **self._runtime_params()}
+        if cat_features:
+            fit_params["cat_features"] = cat_features
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model = self._fit(fit_params, X_fit, y_fit, (X_val, y_val))
+        return self._settle(model, params)
 
     def _evaluate_with_params(
         self,
@@ -181,33 +333,36 @@ class CatBoostTrainer(ABC):
         y_train: np.ndarray,
         y_test: np.ndarray,
         params: dict[str, Any],
-        cat_features: list[int] = None,
+        cat_features: list[int] | None = None,
     ) -> list[float]:
-        """Evaluate model multiple times with given parameters."""
+        """Fit ``n_runs`` models on the whole training set and score them on the test set.
+
+        The secondary scores of each run (``_secondary_metrics``) are left in
+        ``last_secondary``: they come from the same fits, at no extra cost.
+        """
         scores = []
+        self.last_secondary: list[dict[str, float]] = []
         base_seed = params.get("random_seed", 42)
 
-        # Prepare data once
         X_train_proc, X_test_proc, detected_cat_features = self._prepare_for_catboost(
             X_train, X_test
         )
         cat_features = cat_features if cat_features is not None else detected_cat_features
 
         for i in range(self.n_runs):
-            # Change seed for each run to get different results
-            run_params = params.copy()
-            run_params["random_seed"] = base_seed + i
+            run_params = {**params, "random_seed": base_seed + i, **self._runtime_params()}
             if cat_features:
                 run_params["cat_features"] = cat_features
-
-            model = self._get_model_class()(**run_params)
-            model.fit(X_train_proc, y_train)
-            predictions = model.predict(X_test_proc)
-
-            score = self._compute_metric(y_test, predictions)
-            scores.append(score)
+            model = self._fit(run_params, X_train_proc, y_train)
+            y_pred = self._predict(model, X_test_proc)
+            scores.append(self._compute_metric(y_test, y_pred))
+            self.last_secondary.append(self._secondary_metrics(y_test, y_pred))
 
         return scores
+
+    def _predict(self, model: Any, X: pd.DataFrame | np.ndarray) -> np.ndarray:
+        """Predictions that ``_compute_metric`` scores."""
+        return model.predict(X)
 
     def train_and_evaluate(
         self,
@@ -216,77 +371,151 @@ class CatBoostTrainer(ABC):
         y_train: np.ndarray,
         y_test: np.ndarray,
         seed: int = 42,
-        cat_features: list[int] = None,
+        cat_features: list[int] | None = None,
     ) -> tuple[dict[str, Any], list[float], float, float]:
         """
-        Run full optimization and evaluation pipeline.
+        Early-stop on a validation slice of the training data, then score on the test set.
 
         Args:
             X_train: Training features (DataFrame or ndarray)
-            X_test: Test features (DataFrame or ndarray)
+            X_test: Test features (DataFrame or ndarray); only used for the
+                final score, never to choose the number of trees
             y_train: Training labels
             y_test: Test labels
             seed: Random seed
             cat_features: Indices of categorical features (auto-detected if None)
 
         Returns:
-            tuple of (best_params, scores_list, mean_score, std_score)
+            tuple of (final_params, scores_list, mean_score, std_score)
         """
+        params = self.tune(X_train, y_train, seed, cat_features)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-
-            # Detect categorical features if X is DataFrame
-            detected_cat_features = self._get_categorical_indices(X_train)
-            cat_features = cat_features if cat_features is not None else detected_cat_features
-
-            # Optimize hyperparameters
-            n_jobs = int(os.environ.get("METIS_N_JOBS", "1"))
-            sampler = optuna.samplers.TPESampler(seed=seed)
-            study = optuna.create_study(direction="maximize", sampler=sampler)
-            objective = self._create_objective(X_train, X_test, y_train, y_test, seed, cat_features)
-            study.optimize(
-                objective,
-                n_trials=self.n_trials,
-                n_jobs=n_jobs,
-                show_progress_bar=False,
-            )
-
-            best_params = study.best_params
-            best_params["random_seed"] = seed
-            best_params["verbose"] = False
-
-            # Evaluate with best params
             scores = self._evaluate_with_params(
-                X_train, X_test, y_train, y_test, best_params, cat_features
+                X_train, X_test, y_train, y_test, params, cat_features
             )
-
-            return best_params, scores, float(np.mean(scores)), float(np.std(scores))
+        return params, scores, float(np.mean(scores)), float(np.std(scores))
 
 
 class ClassificationTrainer(CatBoostTrainer):
-    """CatBoost classifier trainer using F1 score."""
+    """CatBoost classifier trainer scored with the macro one-vs-rest ROC AUC.
+
+    The AUC ranks the predicted probabilities instead of thresholding them:
+    with weighted F1 (until 2026-10-19) an imbalanced target such as rrhh
+    (16 % positives) put almost every prediction under the 0.5 cut, the
+    score barely beat predicting the majority class and its seed-to-seed
+    noise hid the signal (signal-to-noise 0.35 against 1.9 with AUC; on
+    telco 2.3 against 7.8, adult 3.8 against 14.3, cardio 7.4 against 7.2).
+    """
+
+    _stratify_validation = True
 
     def _get_model_class(self):
         return CatBoostClassifier
 
-    def _compute_metric(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        return f1_score(y_true, y_pred, average="weighted")
+    def _fit(self, params, X, y, eval_set=None):
+        if len(np.unique(np.asarray(y).astype(str))) < 2:
+            return _ConstantClassifier(np.asarray(y)[0])
+        return super()._fit(params, X, y, eval_set)
 
-    def _optimization_direction(self) -> str:
-        return "maximize"
+    def _predict(self, model: Any, X: pd.DataFrame | np.ndarray) -> Any:
+        return np.asarray(model.classes_), np.asarray(model.predict_proba(X))
+
+    def _compute_metric(self, y_true: np.ndarray, y_pred: Any) -> float:
+        classes, proba = y_pred
+        return macro_ovr_auc(y_true, classes, proba)
+
+    def _secondary_metrics(self, y_true: np.ndarray, y_pred: Any) -> dict[str, float]:
+        # The AUC ranks; the log-loss also scores how sure the model is
+        # (``utility.log_loss``): label noise leaves the AUC and moves it.
+        classes, proba = y_pred
+        return {"log_loss": multiclass_log_loss(y_true, classes, proba)}
+
+
+def quadratic_weighted_kappa(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Quadratic weighted kappa (Cohen, 1968) of two vectors of level ranks.
+
+    With quadratic weights kappa equals Lin's concordance correlation of the
+    ranks, ``2·cov / (var_t + var_p + (mean_t − mean_p)²)`` with population
+    moments, which needs no level grid (only the ranks ``i/(K−1)``).  It is 0
+    for a constant prediction or one independent of the truth, 1 for perfect
+    agreement, and it grows with the distance between levels: one level off
+    costs far less than the opposite end.
+    """
+    t = np.asarray(y_true, dtype=float)
+    p = np.asarray(y_pred, dtype=float)
+    denom = t.var() + p.var() + (t.mean() - p.mean()) ** 2
+    if denom <= 0:
+        return 1.0 if np.allclose(t, p) else 0.0
+    return float(2.0 * np.mean((t - t.mean()) * (p - p.mean())) / denom)
+
+
+class OrdinalClassificationTrainer(ClassificationTrainer):
+    """Classifier for an ordinal target, scored with QWK on the level ranks.
+
+    The target is modelled as categories (a classifier beat a regression on
+    the rank with ordinal yardsticks too), but the score must see the order:
+    weighted F1 scored a one-level shift of the whole target 0.00 on cardio,
+    below an independent target (0.42).  The prediction is the level closest
+    to the expected rank under the predicted probabilities: the Bayes
+    decision under the quadratic loss that QWK weighs (on Adult, K = 16, it
+    gave QWK 0.52 against 0.43 with the most probable class).
+
+    *level_ranks* maps each class code to its rank ``i/(K−1)``; a code
+    without a rank (a synthetic label that is no real level) counts as the
+    farthest level from the truth.
+    """
+
+    def __init__(self, level_ranks: dict[int, float], **kwargs: Any):
+        super().__init__(**kwargs)
+        self.level_ranks = {int(k): float(v) for k, v in level_ranks.items()}
+
+    def _ranks(self, codes: np.ndarray) -> np.ndarray:
+        return np.array([self.level_ranks.get(int(c), np.nan) for c in np.ravel(codes)])
+
+    def _secondary_metrics(self, y_true: np.ndarray, y_pred: Any) -> dict[str, float]:
+        # Its predictions are ranks, not probabilities: no log-loss.
+        return {}
+
+    def _predict(self, model: Any, X: pd.DataFrame | np.ndarray) -> np.ndarray:
+        proba = getattr(model, "predict_proba", None)
+        known = sorted(self.level_ranks.items(), key=lambda kv: kv[1])
+        if not callable(proba) or not known:
+            return np.ravel(model.predict(X))
+        classes = np.asarray(model.classes_).astype(int)
+        class_ranks = self._ranks(classes)
+        usable = ~np.isnan(class_ranks)
+        probs = np.asarray(proba(X))[:, usable]
+        expected = (probs @ class_ranks[usable]) / np.maximum(probs.sum(axis=1), 1e-12)
+        codes = np.array([c for c, _ in known])
+        ranks = np.array([r for _, r in known])
+        return codes[np.abs(expected[:, None] - ranks[None, :]).argmin(axis=1)]
+
+    def _compute_metric(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
+        t, p = self._ranks(y_true), self._ranks(y_pred)
+        # A prediction that is no real level: as far as possible from the truth.
+        p = np.where(np.isnan(p), np.where(t >= 0.5, 0.0, 1.0), p)
+        keep = ~np.isnan(t)
+        return quadratic_weighted_kappa(t[keep], p[keep])
 
 
 class RegressionTrainer(CatBoostTrainer):
-    """CatBoost regressor trainer using MAE."""
+    """CatBoost regressor trained and scored with MAE.
+
+    Trained with ``loss_function="MAE"`` (CatBoost's default is RMSE): the
+    score is an MAE, and with a heavy-tailed target (Airbnb price) an
+    RMSE-trained model barely beat predicting the median in MAE, so utility
+    came out NaN ("no signal") or pure noise.  Early stopping follows the loss.
+    """
 
     def _get_model_class(self):
         return CatBoostRegressor
 
+    def _base_params(self, seed: int) -> dict[str, Any]:
+        return {**super()._base_params(seed), "loss_function": "MAE"}
+
     def _compute_metric(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
         return mean_absolute_error(y_true, y_pred)
-
-    def _optimization_direction(self) -> str:
-        return "minimize"
 
 
 # ── Multi-target trainers ────────────────────────────────────────────────
@@ -298,101 +527,66 @@ class MultiTargetRegressionTrainer(CatBoostTrainer):
     def _get_model_class(self):
         return CatBoostRegressor
 
-    def _get_hyperparameter_space(self, trial: optuna.Trial, seed: int) -> dict[str, Any]:
-        params = super()._get_hyperparameter_space(trial, seed)
-        params["loss_function"] = "MultiRMSE"
-        return params
+    def _base_params(self, seed: int) -> dict[str, Any]:
+        return {**super()._base_params(seed), "loss_function": "MultiRMSE"}
 
     def _compute_metric(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
         return mean_absolute_error(y_true, y_pred, multioutput="uniform_average")
 
-    def _optimization_direction(self) -> str:
-        return "minimize"
-
 
 class MultiTargetClassificationTrainer(CatBoostTrainer):
-    """MultiOutputClassifier wrapping CatBoostClassifier for multi-target classification.
+    """One CatBoostClassifier per target for multi-target classification.
 
-    Each sub-estimator handles categorical features natively via CatBoost.
-    Scoring is the mean of per-target weighted F1.
+    Each sub-estimator handles categorical features natively via CatBoost
+    and is early-stopped on its own: the settled params carry one
+    ``(iterations, learning_rate)`` per target under ``"per_target"``.
+    Scoring is the mean of the per-target macro one-vs-rest ROC AUC.
     """
 
     def _get_model_class(self):
         return CatBoostClassifier
 
-    def _compute_metric(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        # y_true / y_pred are 2-D (n_samples, n_targets)
-        if y_true.ndim == 1:
-            return f1_score(y_true, y_pred, average="weighted")
+    def _predict(self, model: Any, X: pd.DataFrame | np.ndarray) -> Any:
+        return [(np.asarray(m.classes_), np.asarray(m.predict_proba(X))) for m in model.models]
+
+    def _compute_metric(self, y_true: np.ndarray, y_pred: Any) -> float:
+        # y_true is 2-D (n_samples, n_targets); y_pred one (classes, proba) per target
+        y_true = np.asarray(y_true).reshape(len(y_true), -1)
         scores = [
-            f1_score(y_true[:, i], y_pred[:, i], average="weighted") for i in range(y_true.shape[1])
+            macro_ovr_auc(y_true[:, i], classes, proba) for i, (classes, proba) in enumerate(y_pred)
         ]
         return float(np.mean(scores))
 
-    def _optimization_direction(self) -> str:
-        return "maximize"
+    def _fit(self, params, X, y, eval_set=None):
+        # One CatBoost per target, without ``MultiOutputClassifier``: sklearn's
+        # ``clone`` rejects CatBoost when ``cat_features`` is set (the whole
+        # strategy failed for any table with a categorical feature).
+        params = dict(params)
+        per_target = params.pop("per_target", None)
+        models = []
+        for j in range(y.shape[1]):
+            y_j = y[:, j]
+            if len(np.unique(np.asarray(y_j).astype(str))) < 2:
+                models.append(_ConstantClassifier(y_j[0]))
+                continue
+            params_j = {**params, **(per_target[j] if per_target else {})}
+            eval_j = (eval_set[0], eval_set[1][:, j]) if eval_set is not None else None
+            models.append(super()._fit(params_j, X, y_j, eval_j))
+        return _PerTargetModel(models)
 
-    # Override the full pipeline to wrap CatBoost inside MultiOutputClassifier
-    def _create_objective(
-        self,
-        X_train: pd.DataFrame | np.ndarray,
-        X_test: pd.DataFrame | np.ndarray,
-        y_train: np.ndarray,
-        y_test: np.ndarray,
-        seed: int,
-        cat_features: list[int] = None,
-    ) -> Callable:
-        X_train_proc, X_test_proc, detected_cat_features = self._prepare_for_catboost(
-            X_train, X_test
-        )
-        cat_features = cat_features if cat_features is not None else detected_cat_features
+    def _settle(self, model: Any, params: dict[str, Any]) -> dict[str, Any]:
+        per_target = []
+        for sub in model.models:
+            settled = super()._settle(sub, {})
+            per_target.append(settled)
+        return {**params, "per_target": per_target}
 
-        def objective(trial: optuna.Trial) -> float:
-            params = self._get_hyperparameter_space(trial, seed)
-            if cat_features:
-                params["cat_features"] = cat_features
 
-            base_model = self._get_model_class()(**params)
-            model = MultiOutputClassifier(base_model)
-            model.fit(X_train_proc, y_train)
-            predictions = model.predict(X_test_proc)
+class _PerTargetModel:
+    """Stacks the predictions of one fitted classifier per target."""
 
-            metric = self._compute_metric(y_test, predictions)
-            if self._optimization_direction() == "minimize":
-                return -metric
-            return metric
+    def __init__(self, models: list):
+        self.models = models
 
-        return objective
-
-    def _evaluate_with_params(
-        self,
-        X_train: pd.DataFrame | np.ndarray,
-        X_test: pd.DataFrame | np.ndarray,
-        y_train: np.ndarray,
-        y_test: np.ndarray,
-        params: dict[str, Any],
-        cat_features: list[int] = None,
-    ) -> list[float]:
-        scores = []
-        base_seed = params.get("random_seed", 42)
-
-        X_train_proc, X_test_proc, detected_cat_features = self._prepare_for_catboost(
-            X_train, X_test
-        )
-        cat_features = cat_features if cat_features is not None else detected_cat_features
-
-        for i in range(self.n_runs):
-            run_params = params.copy()
-            run_params["random_seed"] = base_seed + i
-            if cat_features:
-                run_params["cat_features"] = cat_features
-
-            base_model = self._get_model_class()(**run_params)
-            model = MultiOutputClassifier(base_model)
-            model.fit(X_train_proc, y_train)
-            predictions = model.predict(X_test_proc)
-
-            score = self._compute_metric(y_test, predictions)
-            scores.append(score)
-
-        return scores
+    def predict(self, X) -> np.ndarray:
+        return np.column_stack([np.ravel(m.predict(X)) for m in self.models])

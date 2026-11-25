@@ -14,13 +14,14 @@ from .aggregator import ResultAggregator
 from .calibrator import CalibrationStep
 from .evaluator import MetricEvaluator
 from .loader import DataLoader
-from .preprocessor import DataPreprocessor
+from .preprocessor import DataPreprocessor, ReferenceContext
 from .reporter import ReportGenerator
 from .validator import DataValidator
 
 __all__ = [
     "DataLoader",
     "DataPreprocessor",
+    "ReferenceContext",
     "DataValidator",
     "CalibrationStep",
     "MetricEvaluator",

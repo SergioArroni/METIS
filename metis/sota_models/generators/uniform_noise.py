@@ -58,4 +58,3 @@ class UniformNoiseGenerator(BaseGenerator):
 
         seed = self.random_state if self.random_state is not None else 0
         return _CoreGenerator(schema=schema).generate(self._real_data, n_samples, seed)
-        return _CoreGenerator(schema=schema).generate(self._real_data, n_samples, seed)

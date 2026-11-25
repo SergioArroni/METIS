@@ -1,7 +1,8 @@
 """
 Theil's U metric for Cat↔Cat pairs.
 
-Measures asymmetric uncertainty coefficient between categorical column pairs.
+Measures asymmetric uncertainty coefficient between categorical column pairs,
+in both directions.
 """
 
 import numpy as np
@@ -20,6 +21,12 @@ class TheilsUMetric(CatCatPairMetric):
     uncertainty coefficient between pairs of categorical columns.
     U(Y|X) measures how much knowing X reduces uncertainty about Y.
 
+    Every pair is measured in both directions, U(Y|X) and U(X|Y), each as a
+    pair of its own.  Until 2026-10-19 only U(second|first) was measured,
+    with the columns in alphabetical order: a generator that kept
+    city → country but scrambled the cities within each country was seen
+    or missed depending on how the two columns were named.
+
     Example:
         >>> import pandas as pd
         >>> real = pd.DataFrame({"gender": ["M", "F", "M", "F"], "status": ["A", "B", "A", "B"]})
@@ -32,6 +39,11 @@ class TheilsUMetric(CatCatPairMetric):
 
     def __init__(self):
         super().__init__()
+
+    def _get_applicable_pairs(self) -> list[tuple[str, str]]:
+        """Both orders of every categorical pair (Theil's U is asymmetric)."""
+        pairs = super()._get_applicable_pairs()
+        return pairs + [(c2, c1) for c1, c2 in pairs]
 
     def _theils_u(self, contingency: np.ndarray) -> float:
         """
@@ -86,8 +98,13 @@ class TheilsUMetric(CatCatPairMetric):
         Returns:
             tuple of (real_value, synth_value)
         """
-        real_cont = pd.crosstab(real_col1, real_col2).values
-        synth_cont = pd.crosstab(synth_col1, synth_col2).values
+        if str(real_col1.name) > str(real_col2.name):
+            # Reversed pair: the transpose of the table the other metrics share.
+            real_cont = self._contingency("real", real_col2, real_col1).T
+            synth_cont = self._contingency("synth", synth_col2, synth_col1).T
+        else:
+            real_cont = self._contingency("real", real_col1, real_col2)
+            synth_cont = self._contingency("synth", synth_col1, synth_col2)
 
         r_tu = self._theils_u(real_cont)
         s_tu = self._theils_u(synth_cont)

@@ -29,6 +29,14 @@ class TestResult:
     pairwise_comparisons: pd.DataFrame | None = None
     critical_difference: float | None = None
     interpretation: str = ""
+    # Kendall's coefficient of concordance (Friedman only), tie-corrected.
+    kendall_w: float | None = None
+    # Blocks and methods actually tested, and what had to be left out
+    # because of missing scores (a NaN used to turn the test into "not
+    # significant" without saying so).
+    n_blocks: int | None = None
+    dropped_blocks: list | None = None
+    dropped_methods: list | None = None
 
 
 class StatisticalTest(ABC):
@@ -111,6 +119,21 @@ class FriedmanNemenyiTest(StatisticalTest):
         Returns:
             TestResult with Friedman statistic, p-value, and pairwise comparisons
         """
+        # Missing scores: a method never measured is left out; a block with
+        # any missing score is left out (Friedman needs complete blocks).
+        # Both are reported in the result instead of silently yielding NaN.
+        dropped_methods = [c for c in rankings.columns if rankings[c].isna().all()]
+        rankings = rankings.drop(columns=dropped_methods)
+        incomplete = rankings.isna().any(axis=1)
+        dropped_blocks = list(rankings.index[incomplete])
+        rankings = rankings.loc[~incomplete]
+        missing_note = ""
+        if dropped_methods or dropped_blocks:
+            missing_note = (
+                f" Left out for missing scores: {len(dropped_blocks)} {self.block_label}(s) "
+                f"{dropped_blocks}, method(s) {dropped_methods}."
+            )
+
         # Convert scores to ranks (1=best)
         # For each row (dataset), rank methods: best gets rank 1
         ranked = rankings.rank(axis=1, ascending=False, method="average")
@@ -125,17 +148,26 @@ class FriedmanNemenyiTest(StatisticalTest):
                 p_value=np.nan,
                 is_significant=False,
                 alpha=self.alpha,
-                interpretation="Need at least 2 datasets for Friedman test",
+                interpretation=f"Need at least 2 complete {self.block_label}s for Friedman test."
+                + missing_note,
+                n_blocks=n_datasets,
+                dropped_blocks=dropped_blocks,
+                dropped_methods=dropped_methods,
             )
 
-        if n_methods < 2:
+        if n_methods < 3:
+            # scipy's friedmanchisquare raises with fewer than 3 samples, so a
+            # benchmark of two generators crashed the whole report.
             return TestResult(
                 test_name="Friedman-Nemenyi",
                 statistic=np.nan,
                 p_value=np.nan,
                 is_significant=False,
                 alpha=self.alpha,
-                interpretation="Need at least 2 methods to compare",
+                interpretation=(
+                    f"Friedman needs at least 3 methods (got {n_methods}); "
+                    "use the Wilcoxon test for two."
+                ),
             )
 
         # Friedman test
@@ -143,6 +175,9 @@ class FriedmanNemenyiTest(StatisticalTest):
         statistic, p_value = stats.friedmanchisquare(*[ranked[col] for col in ranked.columns])
 
         is_significant = p_value < self.alpha
+        # Kendall's W = chi2_F / (N (k - 1)); scipy's chi2_F carries the tie
+        # correction, so W does too (Kendall & Babington Smith, 1939).
+        kendall_w = float(statistic / (n_datasets * (n_methods - 1)))
 
         # Calculate average ranks for each method
         avg_ranks = ranked.mean(axis=0).sort_values()
@@ -154,10 +189,22 @@ class FriedmanNemenyiTest(StatisticalTest):
             p_value=p_value,
             is_significant=is_significant,
             alpha=self.alpha,
+            kendall_w=kendall_w,
+            n_blocks=n_datasets,
+            dropped_blocks=dropped_blocks,
+            dropped_methods=dropped_methods,
         )
 
         # If significant, perform Nemenyi post-hoc test
         small_n_warning = ""
+        if self.block_label == "seed":
+            # Seeds are repeated runs of one dataset, not independent problems.
+            missing_note = (
+                f"{missing_note} Scope: the blocks are seeds of one dataset, so this "
+                "tests whether the ranking is stable across runs, not whether it "
+                "generalises to other datasets (for that, datasets as blocks: "
+                "compare_across_datasets, Demšar 2006)."
+            )
         if n_datasets < 5:
             small_n_warning = (
                 f" WARNING: only {n_datasets} {self.block_label}s — Friedman has "
@@ -172,14 +219,15 @@ class FriedmanNemenyiTest(StatisticalTest):
                 f"Friedman test over {n_datasets} {self.block_label}s is "
                 f"significant (p={p_value:.4f} < {self.alpha}). Critical "
                 f"Difference (CD) = {cd:.4f}. Pairs with rank difference > CD "
-                f"are significantly different.{small_n_warning}"
+                f"are significantly different. Kendall's W = {kendall_w:.3f}."
+                f"{small_n_warning}{missing_note}"
             )
         else:
             result.interpretation = (
                 f"Friedman test over {n_datasets} {self.block_label}s is not "
                 f"significant (p={p_value:.4f} >= {self.alpha}). No "
-                f"significant differences detected between methods."
-                f"{small_n_warning}"
+                f"significant differences detected between methods. "
+                f"Kendall's W = {kendall_w:.3f}.{small_n_warning}{missing_note}"
             )
 
         return result

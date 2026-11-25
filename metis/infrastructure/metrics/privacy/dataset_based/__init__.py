@@ -1,35 +1,30 @@
 """Dataset-based privacy metrics."""
 
 from ..privacy_base import (
-    AttributeInferenceMetric,
+    AttackMetric,
     DatasetPrivacyMetric,
     EmpiricalSimilarityMetric,
-    ReidentificationMetric,
+    SyntacticMetric,
 )
-from .attribute_inference import InferenceAttackMetric, MembershipInferenceMetric
+from .attacks import InferenceAttackMetric, MembershipInferenceMetric, RecordLinkageMetric
 from .empirical_similarity import DCRMetric, NNAAMetric
-from .reidentification import (
-    KAnonymityMetric,
-    LDiversityMetric,
-    RecordLinkageMetric,
-    TClosenessMetric,
-)
+from .syntactic import KAnonymityMetric, LDiversityMetric, TClosenessMetric
 
 __all__ = [
     # Base classes
     "DatasetPrivacyMetric",
-    "AttributeInferenceMetric",
-    "ReidentificationMetric",
+    "AttackMetric",
+    "SyntacticMetric",
     "EmpiricalSimilarityMetric",
-    # Attribute Inference
+    # Attacks
     "MembershipInferenceMetric",
     "InferenceAttackMetric",
-    # Reidentification
+    "RecordLinkageMetric",
+    # Syntactic
     "KAnonymityMetric",
     "LDiversityMetric",
     "TClosenessMetric",
-    "RecordLinkageMetric",
-    # Empirical Similarity
+    # Empirical similarity
     "DCRMetric",
     "NNAAMetric",
 ]

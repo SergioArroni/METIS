@@ -11,6 +11,18 @@ import numpy as np
 from scipy import stats as scipy_stats
 
 
+def _is_finite(value: Any) -> bool:
+    """True for a real number that is not NaN/inf (``None`` and non-numbers are False)."""
+    try:
+        return bool(np.isfinite(float(value)))
+    except (TypeError, ValueError):
+        return False
+
+
+def _finite(values: Any) -> list[float]:
+    return [float(v) for v in values if _is_finite(v)]
+
+
 def calculate_multi_run_statistics(run_results: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Calculate statistics across multiple runs for all score levels.
@@ -38,19 +50,16 @@ def calculate_multi_run_statistics(run_results: list[dict[str, Any]]) -> dict[st
     if not run_results:
         return {}
 
-    # Extract all score keys from first run
-    first_scores = run_results[0].get("scores", {})
-    score_keys = [k for k in first_scores if k.endswith("_score")]
+    # Score keys of every run (a family can be missing from the first one), and
+    # only finite values: one NaN run used to turn every statistic into NaN.
+    score_keys = sorted(
+        {k for run in run_results for k in run.get("scores", {}) if k.endswith("_score")}
+    )
 
     statistics = {}
 
     for key in score_keys:
-        # Collect values across all runs
-        values = []
-        for run_result in run_results:
-            score_value = run_result.get("scores", {}).get(key)
-            if score_value is not None:
-                values.append(score_value)
+        values = _finite(run_result.get("scores", {}).get(key) for run_result in run_results)
 
         if not values:
             continue
@@ -76,10 +85,8 @@ def calculate_multi_run_statistics(run_results: list[dict[str, Any]]) -> dict[st
                 # Only include mode if it appears more than once
                 if mode_result.count[0] > 1:
                     stats_dict["mode"] = float(mode_result.mode[0])
-            except Exception as e:
-                import logging
-
-                logging.getLogger(__name__).debug("Mode calculation skipped for %s: %s", key, e)
+            except Exception:
+                pass  # Skip mode if calculation fails
 
         statistics[key] = stats_dict
 
@@ -112,7 +119,7 @@ def _aggregate_hierarchy_stats(run_results: list[dict[str, Any]]) -> dict[str, A
         domain_scores = []
         for run_result in run_results:
             score = run_result.get("hierarchy_breakdown", {}).get(domain_name, {}).get("score")
-            if score is not None:
+            if _is_finite(score):
                 domain_scores.append(score)
 
         if domain_scores:
@@ -131,7 +138,7 @@ def _aggregate_hierarchy_stats(run_results: list[dict[str, Any]]) -> dict[str, A
                         .get(cat_name, {})
                         .get("score")
                     )
-                    if cat_score is not None:
+                    if _is_finite(cat_score):
                         cat_scores.append(cat_score)
 
                 if cat_scores:
@@ -152,7 +159,7 @@ def _aggregate_hierarchy_stats(run_results: list[dict[str, Any]]) -> dict[str, A
                                 .get(subcat_name, {})
                                 .get("score")
                             )
-                            if subcat_score is not None:
+                            if _is_finite(subcat_score):
                                 subcat_scores.append(subcat_score)
 
                         if subcat_scores:

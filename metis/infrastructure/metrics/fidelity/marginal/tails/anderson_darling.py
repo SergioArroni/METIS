@@ -1,49 +1,91 @@
-"""Anderson-Darling test metric for tail distribution comparison."""
+"""Anderson-Darling discrepancy for tail-weighted distribution comparison."""
 
-import warnings
+import math
 
+import numpy as np
 import pandas as pd
-from scipy.stats import anderson_ksamp
 
 from metis.infrastructure.metrics.registry import register
 
 from ...fidelity_base import NumericColumnMetric as TailMetric
 
+# Largest value of the population discrepancy (two distributions with disjoint
+# supports, equal-weight mixture H): 2 * integral_0^1 2F / (2 - F) dF.
+AD_MAX_DISCREPANCY = 4.0 * (2.0 * math.log(2.0) - 1.0)  # ~1.545
+
+
+def ad_discrepancy(x: np.ndarray, y: np.ndarray) -> float:
+    """Bias-corrected Anderson-Darling discrepancy of two samples, in ``[0, 1]``.
+
+    The two-sample Anderson-Darling statistic (Pettitt 1976; Scholz & Stephens
+    1987) is ``A^2 = (nm/N) * D_hat``, with ``D_hat`` the plug-in estimate of the
+    population discrepancy::
+
+        D(F, G) = integral (F - G)^2 / (H (1 - H)) dH
+
+    a Cramér-von Mises distance whose weight ``1 / (H (1 - H))`` emphasises the
+    tails (Anderson & Darling 1952). ``A^2`` is a *test statistic*: for a fixed
+    difference between F and G it grows linearly with the sample size, so a
+    score built on it (as before: ``exp(-A2_std / 5)``) went from 0.82 to 0.003
+    for the same shift when n went from 100 to 2000. ``D`` is the effect size
+    behind it and does not depend on n.
+
+    Estimator (explicit derivation, not taken from a single reference):
+
+    * ``H = (F + G) / 2``, the equal-weight mixture, so that ``D`` does not
+      depend on the ratio of the two sample sizes either.
+    * Ties use mid-values (``F(z-) + f/2n``) and the tie term of the midrank
+      statistic of Scholz & Stephens (1987, eq. 7): denominator
+      ``H (1 - H) - dH / 4``.
+    * Under ``F = G``, ``E[A^2] = k - 1 = 1`` (Scholz & Stephens 1987), i.e.
+      ``E[D_hat] ~ 1/n + 1/m``; it is subtracted (floored at 0).
+    * Divided by its maximum ``4 (2 ln 2 - 1)`` (disjoint supports), so 0 means
+      "same distribution" and 1 "no overlap at all".
+
+    References:
+        Anderson, T. W. & Darling, D. A. (1952). Asymptotic theory of certain
+        "goodness of fit" criteria based on stochastic processes. Annals of
+        Mathematical Statistics, 23(2), 193-212.
+        Pettitt, A. N. (1976). A two-sample Anderson-Darling rank statistic.
+        Biometrika, 63(1), 161-168.
+        Scholz, F. W. & Stephens, M. A. (1987). K-sample Anderson-Darling
+        tests. Journal of the American Statistical Association, 82(399),
+        918-924.
+    """
+    x = np.sort(np.asarray(x, dtype=float))
+    y = np.sort(np.asarray(y, dtype=float))
+    n, m = x.size, y.size
+    if n == 0 or m == 0:
+        return float("nan")
+    z = np.unique(np.concatenate([x, y]))
+    xl, xr = x.searchsorted(z, "left"), x.searchsorted(z, "right")
+    yl, yr = y.searchsorted(z, "left"), y.searchsorted(z, "right")
+    f = (xl + xr) / (2.0 * n)
+    g = (yl + yr) / (2.0 * m)
+    dh = ((xr - xl) / n + (yr - yl) / m) / 2.0
+    h = (f + g) / 2.0
+    den = h * (1.0 - h) - dh / 4.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        terms = np.where(den > 0, dh * (f - g) ** 2 / den, 0.0)
+    d = max(0.0, float(terms.sum()) - (1.0 / n + 1.0 / m))
+    return min(d / AD_MAX_DISCREPANCY, 1.0)
+
 
 @register("fidelity.anderson_darling")
 class AndersonDarlingMetric(TailMetric):
     """
-    Anderson-Darling k-sample test.
+    Anderson-Darling discrepancy (tail-weighted), as an effect size.
 
-    A more powerful test than KS for detecting differences in distribution tails.
-    The AD test gives more weight to the tails compared to the center of the
-    distribution, making it particularly suitable for tail comparison.
-
-    The statistic is in [0, ∞) and will be normalized using robust percentiles.
+    The raw value per column is :func:`ad_discrepancy`: the population quantity
+    that the two-sample Anderson-Darling test estimates, corrected for its
+    sampling bias and divided by its maximum. It is in ``[0, 1]`` (0 = same
+    distribution), does not depend on n nor on the real/synthetic size ratio,
+    and is normalized as a bounded distance (``1 - value``).
     """
 
     name: str = "anderson_darling"
-    is_distance: bool = True  # Higher statistic = more different = worse
+    is_distance: bool = True  # Higher discrepancy = more different = worse
 
     def _compute_column(self, real_col: pd.Series, synth_col: pd.Series) -> float:
-        """
-        Compute Anderson-Darling statistic for a single column.
-
-        Args:
-            real_col: Column from real dataset
-            synth_col: Column from synthetic dataset
-
-        Returns:
-            Anderson-Darling statistic (non-negative)
-        """
-        try:
-            # Suppress p-value warnings (floored/capped) that occur with extreme similarities
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message="p-value")
-                result = anderson_ksamp([real_col.values, synth_col.values], variant="log-normal")
-            return float(result.statistic)
-        except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).debug("anderson_darling fallback for edge case: %s", e)
-            return 0.0
+        """Bias-corrected AD discrepancy of one column, in ``[0, 1]``."""
+        return ad_discrepancy(real_col.to_numpy(dtype=float), synth_col.to_numpy(dtype=float))

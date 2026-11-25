@@ -2,13 +2,17 @@
 Fidelity metrics for measuring synthetic data quality.
 
 Structure:
-- Global: Structural metrics (correlation matrix, MMD, energy distance)
+- Global: Structural metrics (correlation matrix, MMD, energy distance, outliers)
 - Marginal: Per-column distribution (Tails, Scales, Coverage)
 - Conditional: Bivariate relationships (Num↔Num, Num↔Cat, Cat↔Cat)
+
+Metrics are aggregated by ``metis.application.aggregator.Aggregator``
+(metrics -> subcategory -> category -> family). The per-package aggregators
+(``FidelityAggregator``, ``MarginalAggregator``...) were removed: nothing used
+them, they did not receive the execution ``context`` and they reimplemented
+the metrics with formulas that had drifted from the registered ones.
 """
 
-from .conditional import ConditionalAggregator, ConditionalResult
-from .fidelity_aggregator import FidelityAggregator, FidelityResult
 from .fidelity_base import (
     BaseFidelityMetric,
     CatCatPairMetric,
@@ -20,32 +24,8 @@ from .fidelity_base import (
     PairFidelityMetric,
     UniversalColumnMetric,
 )
-from .marginal import (
-    CoverageAggregator,
-    CoverageResult,
-    MarginalAggregator,
-    MarginalResult,
-    ScalesAggregator,
-    ScalesResult,
-    TailsAggregator,
-    TailsResult,
-)
 
 __all__ = [
-    # Aggregators
-    "FidelityAggregator",
-    "FidelityResult",
-    "MarginalAggregator",
-    "MarginalResult",
-    "TailsAggregator",
-    "TailsResult",
-    "ScalesAggregator",
-    "ScalesResult",
-    "CoverageAggregator",
-    "CoverageResult",
-    "ConditionalAggregator",
-    "ConditionalResult",
-    # Base classes
     "BaseFidelityMetric",
     "ColumnFidelityMetric",
     "NumericColumnMetric",

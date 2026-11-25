@@ -20,29 +20,29 @@ data:
     id: id
     host_id: id
     # Texto (alta cardinalidad)
-    name: text
-    host_name: text
-    license: text
+    name: nominal
+    host_name: nominal
+    license: nominal
     # Geográficas
-    neighbourhood_group: categorical
-    neighbourhood: categorical
-    latitude: geospatial
-    longitude: geospatial
+    neighbourhood_group: nominal
+    neighbourhood: nominal
+    latitude: continuous
+    longitude: continuous
     # Tipo de alojamiento
-    room_type: categorical
+    room_type: nominal
     # Target
     price: continuous
     # Restricciones
-    minimum_nights: continuous
+    minimum_nights: {type: discrete, step: 1}
     # Reseñas
-    number_of_reviews: continuous
-    reviews_per_month: continuous
-    number_of_reviews_ltm: continuous
-    last_review: datetime
+    number_of_reviews: {type: discrete, step: 1}
+    reviews_per_month: {type: discrete, step: 0.01}
+    number_of_reviews_ltm: {type: discrete, step: 1}
+    last_review: {type: continuous, datetime: true}
     # Actividad del host
-    calculated_host_listings_count: continuous
+    calculated_host_listings_count: {type: discrete, step: 1}
     # Disponibilidad
-    availability_365: continuous
+    availability_365: {type: discrete, step: 1}
 
 # ── 2. MÉTRICAS (compartidas por pipeline, calibración y benchmark) ──────────
 
@@ -54,13 +54,13 @@ metrics:
   - "fidelity.marginal.coverage"
   - "fidelity.conditional"
   # Utility:
-  - "utility.tts"
+  # Utility as a substitute for real training data: TSTR only.  TTS, TRTS
+  # and TTRS measure other things (TTRS gave 0.89-0.92 to useless tables).
   - "utility.tstr"
-  - "utility.trts"
-  - "utility.ttrs"
+  - "utility.log_loss"
   # Privacy via subcategory shortcuts:
-  - "privacy.dataset_based.attribute_inference"
-  - "privacy.dataset_based.reidentification"
+  - "privacy.dataset_based.attacks"
+  - "privacy.dataset_based.syntactic"
   - "privacy.dataset_based.empirical_similarity"
 
 # ── 3. REPRODUCIBILIDAD ─────────────────────────────────────────────────────
@@ -71,10 +71,9 @@ reproducibility:
 # ── 4. CALIBRACIÓN (opcional) ────────────────────────────────────────────────
 
 calibration:
-  n_iterations: 5
+  n_iterations: 10
   sample_percentage: 100.0
   n_jobs: 1
-  tune_aggregators: true
 
 # ── 5. EVALUACIÓN (pipeline normal con CSV sintético) ────────────────────────
 
@@ -130,6 +129,21 @@ benchmark:
         epochs: 300
         batch_size: 500
         sigma: 1.0
+        # Public bounds (cost no ε): domain limits of the Inside Airbnb schema
+        # and the Barcelona municipal box, rounded, not the observed min/max.
+        # With ~3900 complete training rows, inferring 10 bounds with DP failed.
+        # last_review is a datetime passed as epoch seconds: 2008-01-01..2026-01-01.
+        bounds:
+          availability_365: [0, 365]
+          calculated_host_listings_count: [0, 600]
+          last_review: [1199145600, 1767225600]
+          latitude: [41.30, 41.50]
+          longitude: [2.05, 2.25]
+          minimum_nights: [0, 1125]
+          number_of_reviews: [0, 2000]
+          number_of_reviews_ltm: [0, 1000]
+          price: [0, 10000]
+          reviews_per_month: [0, 100]
 
   statistical_test:
     method: "friedman-nemenyi"

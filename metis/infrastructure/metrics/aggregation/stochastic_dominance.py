@@ -29,6 +29,15 @@ from enum import Enum
 
 import numpy as np
 
+# Risk aversion λ of the SSD certainty equivalent, everywhere METIS uses SSD
+# (categories → family, families → composite).  5 until 2026-10-28; 3 since:
+# on ~18 000 scored pairs it is the only value that both keeps a total failure
+# of one family below a table that is mediocre in all of them (needs λ ≥ 1.4
+# with equal weights, ≥ 3 with Hefesto's 3:1 use-case weights) and never lets
+# the composite collapse onto the worst family (from λ = 3.5 it does in some
+# pairs, at λ = 5 in one in ten).  Decision §22 of the method decisions.
+DEFAULT_RISK_AVERSION = 3.0
+
 
 class AggregationLevel(Enum):
     """
@@ -189,7 +198,7 @@ def fsd_scores(A: np.ndarray) -> np.ndarray:
     return np.clip(mu, 0.0, 1.0)
 
 
-def ssd_score(mu: np.ndarray, risk_aversion: float = 5.0) -> float:
+def ssd_score(mu: np.ndarray, risk_aversion: float = DEFAULT_RISK_AVERSION) -> float:
     """
     Compute Second-Order Stochastic Dominance (SSD) score using exponential utility.
 
@@ -206,7 +215,7 @@ def ssd_score(mu: np.ndarray, risk_aversion: float = 5.0) -> float:
 
     Interpretation:
         - λ = 0: Risk-neutral (reduces to arithmetic mean)
-        - λ = 5-7: Moderate risk aversion (recommended for aggregation)
+        - λ = 3: METIS default (§22); λ = 5+: the worst value starts to decide alone
         - λ = 10+: High risk aversion (heavily penalizes poor scores)
 
     Properties:
@@ -217,7 +226,7 @@ def ssd_score(mu: np.ndarray, risk_aversion: float = 5.0) -> float:
 
     Args:
         mu: Array of scores to aggregate, values in [0, 1]
-        risk_aversion: Risk aversion parameter λ (default: 5.0)
+        risk_aversion: Risk aversion parameter λ (default: DEFAULT_RISK_AVERSION = 3)
 
     Returns:
         SSD-aggregated score in [0, 1]
@@ -268,7 +277,7 @@ def aggregate_metrics(
     A: np.ndarray,
     normalize: bool = False,
     lower_is_better: np.ndarray | None = None,
-    risk_aversion: float = 5.0,
+    risk_aversion: float = DEFAULT_RISK_AVERSION,
 ) -> tuple[np.ndarray, float]:
     """
     Full pipeline: Collapse metrics matrix A into global score Q.
@@ -284,7 +293,7 @@ def aggregate_metrics(
            - m = number of metrics (e.g., KS, Wasserstein, etc.)
         normalize: If True, apply normalize_metrics first
         lower_is_better: Boolean array for normalization (if normalize=True)
-        risk_aversion: Risk aversion parameter λ for SSD (default: 5.0)
+        risk_aversion: Risk aversion parameter λ for SSD (default: DEFAULT_RISK_AVERSION = 3)
 
     Returns:
         tuple (mu, Q) where:
@@ -329,7 +338,7 @@ def aggregate_metrics(
 def hierarchical_aggregate(
     scores: np.ndarray,
     level: AggregationLevel,
-    risk_aversion: float = 5.0,
+    risk_aversion: float = DEFAULT_RISK_AVERSION,
 ) -> float:
     """
     Aggregate scores at a specific hierarchy level.
@@ -340,7 +349,7 @@ def hierarchical_aggregate(
     Args:
         scores: Array of scores to aggregate, values in [0, 1]
         level: Aggregation level determining the method (FSD or SSD)
-        risk_aversion: Risk aversion parameter λ for SSD (default: 5.0)
+        risk_aversion: Risk aversion parameter λ for SSD (default: DEFAULT_RISK_AVERSION = 3)
 
     Returns:
         Aggregated score in [0, 1]
@@ -396,7 +405,7 @@ def weighted_fsd_score(scores: np.ndarray, weights: np.ndarray | None = None) ->
 def weighted_ssd_score(
     scores: np.ndarray,
     weights: np.ndarray | None = None,
-    risk_aversion: float = 5.0,
+    risk_aversion: float = DEFAULT_RISK_AVERSION,
 ) -> float:
     """Weighted SSD score using exponential utility certainty equivalent.
 
@@ -422,7 +431,7 @@ def weighted_hierarchical_aggregate(
     scores: np.ndarray,
     weights: np.ndarray | None,
     level: AggregationLevel,
-    risk_aversion: float = 5.0,
+    risk_aversion: float = DEFAULT_RISK_AVERSION,
 ) -> float:
     """Weighted variant of hierarchical_aggregate honoring per-score weights."""
     scores = np.asarray(scores, dtype=np.float64)
@@ -438,7 +447,7 @@ def weighted_hierarchical_aggregate(
 
 def aggregate_hierarchical(
     level1_scores: dict,
-    risk_aversion: float = 5.0,
+    risk_aversion: float = DEFAULT_RISK_AVERSION,
 ) -> tuple[dict, float]:
     """
     Full hierarchical aggregation from level 1 to final score.
@@ -451,7 +460,7 @@ def aggregate_hierarchical(
         level1_scores: Dictionary mapping category names to arrays of metric scores.
                       Each array contains individual metric scores in [0, 1].
                       Example: {"tails": [0.9, 0.8, 0.7], "scales": [0.85, 0.75]}
-        risk_aversion: Risk aversion parameter λ for SSD aggregation (default: 5.0)
+        risk_aversion: Risk aversion parameter λ for SSD aggregation (default: DEFAULT_RISK_AVERSION = 3)
 
     Returns:
         tuple of (category_scores, final_score) where:
