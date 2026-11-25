@@ -7,6 +7,7 @@ from metis.infrastructure.metrics.registry import register
 from metis.shared.distributions import align_distributions
 
 from ...fidelity_base import UniversalColumnMetric as UniversalMarginalMetric
+from ._binning import is_continuous, quantile_bin_distributions
 
 
 @register("fidelity.psi")
@@ -24,6 +25,11 @@ class PSIMetric(UniversalMarginalMetric):
     - PSI < 0.1: no significant change
     - 0.1 ≤ PSI < 0.25: moderate change
     - PSI ≥ 0.25: significant change
+
+    Numeric columns are binned on the deciles of the real column (the usual
+    PSI construction, open-ended outer bins), not on 50 equal-width bins of the
+    pooled data: with a few hundred rows those leave many near-empty bins and
+    the plug-in bias alone pushed PSI to ~0.3 for data of the same process.
 
     Values are clipped at 10.0 for numerical stability.
     Works for both categorical and numeric columns.
@@ -43,7 +49,10 @@ class PSIMetric(UniversalMarginalMetric):
         Returns:
             PSI in [0, 10], lower is better
         """
-        p, q = align_distributions(real_col, synth_col)
+        if is_continuous(real_col):
+            p, q = quantile_bin_distributions(real_col, synth_col)
+        else:
+            p, q = align_distributions(real_col, synth_col)
 
         # PSI = sum((p - q) * ln(p/q))
         with np.errstate(divide="ignore", invalid="ignore"):

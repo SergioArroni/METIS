@@ -1,7 +1,12 @@
-"""Lower Bound Calibration Strategy (Real vs Noise).
+"""Lower Bound Calibration Strategy (worst case per family).
 
-Establishes the lower bound (worst case) by evaluating metrics between
-real data and uniform random noise.
+* fidelity: uniform noise against the generator's training rows;
+* privacy: an exact copy of the training rows (the most a generator can
+  leak), evaluated with the holdout, as a synthetic table is.
+
+Uniform noise used to be the privacy floor too, but noise is perfectly
+private: with the relative privacy metrics it scores ≈1, like the upper
+reference, and the bounds came out inverted (study ``calib_v2``).
 """
 
 import logging
@@ -9,16 +14,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from metis.calibrate.strategies.base import BaseCalibrationStrategy
+from metis.calibrate.strategies.base import BaseCalibrationStrategy, tercile_split
 
 
 class LowerBoundStrategy(BaseCalibrationStrategy):
-    """
-    Calibration strategy for lower bounds (Real vs Noise).
-
-    Generates uniform random noise and evaluates metrics against the real
-    dataset to establish the worst possible scenario.
-    """
+    """Noise (fidelity) and exact copy (privacy) against the training third."""
 
     def __init__(self, evaluator=None, noise_generator=None, logger: logging.Logger = None):
         super().__init__(logger=logger)
@@ -27,11 +27,7 @@ class LowerBoundStrategy(BaseCalibrationStrategy):
         self._evaluator = None
 
     def get_strategy_name(self) -> str:
-        return "Real vs Noise (Uniform)"
-
-    def _iteration_seed(self, base_seed: int, index: int) -> int:
-        """Same seed scheme as upper strategy and benchmark."""
-        return base_seed + index
+        return "Uniform noise (fidelity) / exact copy (privacy), with holdout"
 
     def calibrate(
         self,
@@ -50,23 +46,18 @@ class LowerBoundStrategy(BaseCalibrationStrategy):
         evaluator_cls = self._evaluator_class or InMemoryEvaluator
         self._evaluator = evaluator_cls(config_template_path)
 
-        # Provide the schema to the noise generator so it can distinguish
-        # columns like TotalCharges (str in the CSV but ``continuous`` in
-        # the YAML schema) and generate numeric noise for them.
-        config_path = Path(config_template_path)
-        with config_path.open(encoding="utf-8") as fh:
-            raw_schema = yaml.safe_load(fh).get("data", {}).get("schema", {})
-
-        # Normalize schema: extract 'type' from dict values
-        schema = {}
-        for col, spec in raw_schema.items():
-            if isinstance(spec, dict):
-                schema[col] = spec.get("type", "categorical")
-            elif isinstance(spec, str):
-                schema[col] = spec
-            else:
-                schema[col] = "categorical"  # Fallback
-
+        # The noise generator needs the schema to tell, e.g., TotalCharges
+        # (str in the CSV, ``continuous`` in the YAML) from a categorical.
+        with Path(config_template_path).open(encoding="utf-8") as fh:
+            raw_schema = (yaml.safe_load(fh) or {}).get("data", {}).get("schema", {})
+        if not isinstance(raw_schema, dict):  # "auto": the noise follows the dtypes
+            raw_schema = {}
+        schema = {
+            col: (spec.get("type", "nominal") if isinstance(spec, dict) else spec)
+            if isinstance(spec, (dict, str))
+            else "nominal"
+            for col, spec in raw_schema.items()
+        }
         if schema and hasattr(self.noise_generator, "_schema"):
             self.noise_generator._schema = schema
 
@@ -79,47 +70,36 @@ class LowerBoundStrategy(BaseCalibrationStrategy):
             n_jobs,
         )
 
-    def _execute_iteration(
-        self,
-        real_data: pd.DataFrame,
-        config_template_path: str,
-        sample_size: int,
-        seed: int,
-    ) -> dict[str, float]:
-        """Execute an iteration injecting the noise_generator."""
-        return self._run_single_iteration(
-            real_data,
-            config_template_path,
-            sample_size,
-            seed,
-        )
-
     def _run_single_iteration(
         self,
         real_data: pd.DataFrame,
         config_template_path: str,
         sample_size: int,
         seed: int,
-    ) -> dict[str, float]:
-        """
-        Run a single iteration (Real vs Noise).
-
-        Generates uniform noise with the same size as the full real dataset
-        and evaluates metrics between them.  Using the complete dataset
-        (instead of a bootstrap sample) ensures that the lower-bound
-        scores are directly comparable to the benchmark's uniform_noise
-        generator results.
-        """
-        n_samples = len(real_data)
-
-        noise_sample = self.noise_generator.generate(
-            reference_data=real_data,
-            n_samples=n_samples,
-            seed=seed,
+    ):
+        """One iteration: two evaluations, merged by family."""
+        train, holdout, unseen = tercile_split(real_data, sample_size, seed, self._stratify_by, self._split)
+        # References at the size of the unseen part, as the benchmark's tables
+        # (the holdout has that size with 60/20/20 and with thirds, not with
+        # every ``calibration.split``).
+        n_rows = len(unseen)
+        noise = self.noise_generator.generate(
+            reference_data=real_data, n_samples=n_rows, seed=seed
         )
-
-        return self._evaluator.evaluate(
-            real_data=real_data,
-            synth_data=noise_sample,
-            seed=seed,
-        )
+        copy = train.sample(n=min(n_rows, len(train)), random_state=seed).reset_index(drop=True)
+        parts = []
+        for family, synth in (("fidelity", noise), ("privacy", copy)):
+            # A config without metrics of a family has nothing to anchor there
+            # (an empty metric list is a configuration error of the evaluation).
+            if not self._evaluator.metrics_of((family,)):
+                continue
+            part = self._evaluator.evaluate(
+                real_data=train, synth_data=synth, seed=seed, holdout=holdout, families=(family,)
+            )
+            parts.append((part, family))
+        merged: list[dict] = [{}, {}, {}]
+        for part, family in parts:
+            for out, values in zip(merged, part, strict=True):
+                if family in values:
+                    out[family] = values[family]
+        return tuple(merged)

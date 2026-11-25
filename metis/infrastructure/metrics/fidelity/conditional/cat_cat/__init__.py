@@ -7,13 +7,11 @@ Computes association metrics between pairs of categorical columns:
 - Chi-squared statistic (normalized)
 """
 
-from .cat_cat_aggregator import CatCatMetrics
 from .chi2_stat import Chi2StatMetric
 from .cramers_v import CramersVMetric
 from .theils_u import TheilsUMetric
 
 __all__ = [
-    "CatCatMetrics",
     "CramersVMetric",
     "TheilsUMetric",
     "Chi2StatMetric",

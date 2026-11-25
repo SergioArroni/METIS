@@ -80,4 +80,3 @@ class TRTSMetric(BaseStrategyMetric):
     def get_description(self) -> str:
         """Return human-readable description."""
         return "Train on Real, Test on Synthetic (Distribution shift)"
-        return "Train on Real, Test on Synthetic (Distribution shift)"

@@ -8,6 +8,9 @@ import pandas as pd
 from .base import BaseGenerator
 from .gan_utils import DEFAULT_HIGH_CARDINALITY_THRESHOLD, filter_high_cardinality
 
+# Value of a high-cardinality column whose domain is not declared public.
+SUPPRESSED = "SUPPRESSED"
+
 # ── Optional dependency check ────────────────────────────────────────────────
 try:
     from snsynth import Synthesizer as SNSynthesizer
@@ -28,6 +31,28 @@ class DPCTGANGenerator(BaseGenerator):
     The key parameter is ``epsilon`` (ε), the total privacy budget.
     Lower ε ⇒ stronger privacy guarantees but lower data quality.
 
+    Privacy accounting (``self.privacy_accounting`` after ``fit``) — the whole
+    pipeline spends at most ``epsilon``:
+
+    * Continuous bounds: from ``bounds`` (public, declared in the config) at no
+      cost; for columns without declared bounds, smartnoise infers them with
+      ``preprocessor_eps`` (a share of the budget it subtracts from training).
+      The previous version read the *exact* min/max of the real table with
+      ``preprocessor_eps=0``: not private, and outside the declared ε.
+    * High-cardinality categorical columns (dropped from the GAN to avoid OOM)
+      are sampled from a Laplace-noised histogram (a share of ε) over a domain
+      declared public in ``public_domains``; without a declared domain the
+      column is filled with the constant ``SUPPRESSED`` (the labels themselves,
+      e.g. host names, are private).  The previous version bootstrapped the
+      *real* values (in Airbnb, real ``name``/``host_name``/``license``) with
+      no DP at all.
+    * The rest is DP-SGD on the discriminator.
+
+    Robustness: rows with missing values are dropped before training (a NaN in
+    a batch made the sigmoid output NaN and ``BCELoss`` fail — the "divergence"
+    seen in telco on 2 of 3 seeds, whose ``TotalCharges`` has blank cells), and
+    ``batch_size`` is capped to an even number not larger than the table.
+
     Requires: smartnoise-synth (``pip install smartnoise-synth``)
     """
 
@@ -44,6 +69,10 @@ class DPCTGANGenerator(BaseGenerator):
         high_cardinality_threshold: int = DEFAULT_HIGH_CARDINALITY_THRESHOLD,
         disabled_dp: bool = False,
         random_state: int | None = None,
+        bounds: dict[str, tuple[float, float]] | None = None,
+        preprocessor_eps_share: float = 0.1,
+        histogram_eps_share: float = 0.1,
+        public_domains: dict[str, list] | None = None,
         **kwargs,
     ):
         super().__init__(name=name, **kwargs)
@@ -57,6 +86,12 @@ class DPCTGANGenerator(BaseGenerator):
         self.high_cardinality_threshold = high_cardinality_threshold
         self.disabled_dp = disabled_dp
         self.random_state = random_state
+        self.bounds = dict(bounds or {})
+        self.preprocessor_eps_share = preprocessor_eps_share
+        self.histogram_eps_share = histogram_eps_share
+        self.public_domains = dict(public_domains or {})
+        self.privacy_accounting: dict = {}
+        self._dp_histograms: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
         # Fitted state
         self._model = None
@@ -80,7 +115,7 @@ class DPCTGANGenerator(BaseGenerator):
                 "Install with: pip install smartnoise-synth"
             )
 
-        self._real_data = real_data.copy()
+        # The real table is not kept: nothing after fit may read real values.
         self._all_columns = real_data.columns.tolist()
         self._categorical_columns = list(categorical_columns or [])
         ordinal_columns = ordinal_columns or {}
@@ -100,19 +135,28 @@ class DPCTGANGenerator(BaseGenerator):
                 else:
                     self._categorical_columns.append(col)
 
+        # Numeric columns as numbers (blank strings become NaN) and complete
+        # rows only: a NaN reaching the discriminator breaks training.
+        data = real_data.copy()
+        for col in self._continuous_columns:
+            data[col] = pd.to_numeric(data[col], errors="coerce")
+        data = data.dropna().reset_index(drop=True)
+        if len(data) < 4:
+            raise ValueError("DP-CTGAN needs at least 4 complete rows")
+
         # Mirror the OOM protection already used by CTGAN/TVAE: very
         # high-cardinality categoricals explode the one-hot dimensionality
         # and make Opacus allocate huge per-sample gradient tensors.
         train_data, kept_cat_cols, self._dropped_cols = filter_high_cardinality(
-            real_data.copy(),
+            data,
             self._categorical_columns,
             threshold=self.high_cardinality_threshold,
         )
         continuous_kept = [c for c in self._continuous_columns if c not in self._dropped_cols]
-
         self._categorical_columns = kept_cat_cols
         self._continuous_columns = continuous_kept
 
+        rng = np.random.default_rng(self.random_state)
         if self.random_state is not None:
             np.random.seed(self.random_state)
             try:
@@ -122,24 +166,59 @@ class DPCTGANGenerator(BaseGenerator):
             except ImportError:
                 pass
 
-        # Build explicit bounds for continuous columns so the DP
-        # preprocessor does not need to spend any epsilon on approx_bounds.
-        # This keeps the full privacy budget for DP-SGD training.
+        # Budget: histograms of the dropped columns, then (inside smartnoise)
+        # bound inference, then DP-SGD.
+        with_domain = [c for c in self._dropped_cols if c in self.public_domains]
+        eps_hist = self.histogram_eps_share * self.epsilon if with_domain else 0.0
+        self._dp_histograms = {}
+        for col in self._dropped_cols:
+            if col not in self.public_domains:
+                self._dp_histograms[col] = (np.array([SUPPRESSED]), np.array([1.0]))
+                continue
+            values = data[col].astype(str)
+            domain = np.array([str(v) for v in self.public_domains[col]])
+            counts = values.value_counts().reindex(domain).fillna(0).to_numpy(float)
+            # Laplace mechanism, sensitivity 1 per histogram, the share split over columns.
+            noisy = counts + rng.laplace(0.0, len(with_domain) / eps_hist, len(domain))
+            noisy = np.clip(noisy, 0.0, None)
+            if noisy.sum() <= 0:
+                noisy = np.ones(len(domain))
+            self._dp_histograms[col] = (domain, noisy / noisy.sum())
+        eps_model = self.epsilon - eps_hist
+
         from snsynth.transform import MinMaxTransformer
 
         constraints = {}
         for col in self._continuous_columns:
-            constraints[col] = MinMaxTransformer(
-                lower=float(train_data[col].min()),
-                upper=float(train_data[col].max()),
-                negative=True,
-            )
+            if col in self.bounds:
+                lower, upper = self.bounds[col]
+                constraints[col] = MinMaxTransformer(
+                    lower=float(lower), upper=float(upper), negative=True
+                )
+        needs_inference = any(c not in constraints for c in self._continuous_columns)
+        preprocessor_eps = self.preprocessor_eps_share * eps_model if needs_inference else 0.0
+
+        # Opacus needs an even batch no larger than the table.
+        batch_size = min(self.batch_size, len(train_data))
+        batch_size -= batch_size % 2
+        self.privacy_accounting = {
+            "epsilon_total": self.epsilon,
+            "epsilon_histograms": eps_hist,
+            "epsilon_bounds_inference": preprocessor_eps,
+            "epsilon_dp_sgd": eps_model - preprocessor_eps,
+            "public_bounds": sorted(constraints),
+            "inferred_bounds": sorted(c for c in self._continuous_columns if c not in constraints),
+            "dp_histogram_columns": with_domain,
+            "suppressed_columns": [c for c in self._dropped_cols if c not in with_domain],
+            "batch_size": batch_size,
+            "rows_used": len(train_data),
+        }
 
         self._model = SNSynthesizer.create(
             "dpctgan",
-            epsilon=self.epsilon,
+            epsilon=eps_model,
             epochs=self.epochs,
-            batch_size=self.batch_size,
+            batch_size=batch_size,
             sigma=self.sigma,
             embedding_dim=self.embedding_dim,
             generator_dim=self.generator_dim,
@@ -150,13 +229,22 @@ class DPCTGANGenerator(BaseGenerator):
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            self._model.fit(
-                train_data,
-                categorical_columns=self._categorical_columns,
-                continuous_columns=self._continuous_columns,
-                preprocessor_eps=0.0,
-                transformer=constraints,
-            )
+            try:
+                self._model.fit(
+                    train_data,
+                    categorical_columns=self._categorical_columns,
+                    continuous_columns=self._continuous_columns,
+                    preprocessor_eps=preprocessor_eps,
+                    transformer=constraints,
+                )
+            except ValueError as exc:
+                if "bounds" not in str(exc):
+                    raise
+                raise ValueError(
+                    f"DP-CTGAN could not infer private bounds for {self.privacy_accounting['inferred_bounds']} "
+                    f"with ε={preprocessor_eps:.3g} on {len(train_data)} rows; declare public "
+                    "bounds in the generator params (bounds: {column: [low, high]})"
+                ) from exc
 
         self._is_fitted = True
 
@@ -189,14 +277,10 @@ class DPCTGANGenerator(BaseGenerator):
             if list(synthetic.columns) != self._all_columns:
                 synthetic.columns = [c for c in self._all_columns if c not in self._dropped_cols]
 
-        if self._dropped_cols and self._real_data is not None:
-            for col in self._dropped_cols:
-                if col in self._real_data.columns:
-                    synthetic[col] = (
-                        self._real_data[col]
-                        .sample(n=n_samples, replace=True, random_state=self.random_state)
-                        .values
-                    )
+        rng = np.random.default_rng(self.random_state)
+        for col, (domain, probs) in self._dp_histograms.items():
+            # Never real values row by row: a draw from the DP histogram.
+            synthetic[col] = rng.choice(domain, size=n_samples, p=probs)
 
         # Ensure column order matches original data
         final_cols = [c for c in self._all_columns if c in synthetic.columns]

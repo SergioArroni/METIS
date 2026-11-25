@@ -46,7 +46,7 @@ class DeleteImputeGenerator(BaseGenerator):
 
         for col in real_data.columns:
             if self.impute_strategy == "zero":
-                self._impute_values[col] = 0
+                self._impute_values[col] = self._zero_value(real_data[col], col)
             elif self.impute_strategy == "mean":
                 if col in self._categorical_columns or col in self._ordinal_columns:
                     self._impute_values[col] = real_data[col].mode()[0]
@@ -67,6 +67,23 @@ class DeleteImputeGenerator(BaseGenerator):
                 raise ValueError(f"Unknown impute_strategy: {self.impute_strategy}")
 
         self._is_fitted = True
+
+    def _zero_value(self, column: pd.Series, col: str):
+        """The constant "zero" of a column, always a valid value of its type.
+
+        Numeric columns get 0.  A categorical or ordinal column has no 0: it
+        used to get one anyway, an invalid level that METIS drops at casting
+        (88.8 % of the rows with 3 ordinals; ~99 % in rrhh with 7), so the
+        baseline was scored on a handful of rows.  An ordinal gets its lowest
+        level (the bottom of its scale); a categorical its first category in
+        sorted order (a fixed constant, unlike the mode of ``delete_mean``).
+        """
+        if col in self._ordinal_columns and self._ordinal_columns[col]:
+            return self._ordinal_columns[col][0]
+        if col in self._categorical_columns or not pd.api.types.is_numeric_dtype(column):
+            values = column.dropna().unique()
+            return sorted(values, key=str)[0] if len(values) else 0
+        return 0
 
     def generate(self, n_samples: int) -> pd.DataFrame:
         """Generate synthetic data by deleting and imputing values."""

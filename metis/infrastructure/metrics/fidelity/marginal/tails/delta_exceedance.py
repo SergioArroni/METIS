@@ -18,7 +18,14 @@ class DeltaExceedanceMetric(TailMetric):
     by examining exceedance probabilities at multiple quantile levels.
 
     Computes the average absolute difference in exceedance probabilities
-    at the 90th, 95th, and 99th percentiles of the real data.
+    at the 90th, 95th and 99th percentiles of the real data (upper tail) and
+    at the 1st, 5th and 10th (lower tail), times two.
+
+    Scale: the six-term mean reaches at most 0.5 (all synthetic mass beyond
+    one extreme: the upper deltas are 0.90/0.95/0.99, the lower ones
+    0.10/0.05/0.01), so it is doubled and clipped to [0, 1]. Without that,
+    ``1 - delta`` never went below 0.5 (and the former ``1/(1+delta)``
+    below 0.67).
     """
 
     name: str = "delta_exceedance"
@@ -66,4 +73,4 @@ class DeltaExceedanceMetric(TailMetric):
             delta = abs(p_real - p_synth)
             deltas.append(delta)
 
-        return float(np.mean(deltas))
+        return float(min(1.0, 2.0 * np.mean(deltas)))

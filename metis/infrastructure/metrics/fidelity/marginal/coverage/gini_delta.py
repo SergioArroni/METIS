@@ -25,46 +25,42 @@ class GiniDeltaMetric(MarginalMetric):
     name: str = "gini_delta"
     is_distance: bool = True
 
-    def _compute_gini(self, values: np.ndarray) -> float:
+    @staticmethod
+    def _compute_gini(values: np.ndarray) -> float:
+        """Gini coefficient ``sum_u sum_v |x_u - x_v| / (2 n^2 mean(x))``.
+
+        NaN when the mean is not positive. Invariant to the unit of the
+        column: ``G(c * x) = G(x)``.
         """
-        Compute Gini coefficient.
-
-        Args:
-            values: Array of values
-
-        Returns:
-            Gini coefficient in [0, 1]
-        """
-        if len(values) == 0:
-            return 0.0
-
-        # Shift values to be non-negative
-        shifted = values - values.min() + 1
-        n = len(shifted)
-
-        sorted_vals = np.sort(shifted)
-        cumulative = np.cumsum(sorted_vals)
-
-        # Gini = (2 * sum(i * x_i) - (n+1) * sum(x_i)) / (n * sum(x_i))
-        numerator = 2 * np.sum(np.arange(1, n + 1) * sorted_vals) - (n + 1) * cumulative[-1]
-        denominator = n * cumulative[-1]
-
-        if denominator > 1e-10:
-            return numerator / denominator
-        return 0.0
+        values = np.sort(np.asarray(values, dtype=float))
+        n = len(values)
+        if n == 0:
+            return float("nan")
+        total = values.sum()
+        if total <= 1e-12 * max(1.0, float(np.abs(values).sum())):
+            return float("nan")
+        # sum_u sum_v |x_u - x_v| = 2 sum_i (2i - n - 1) x_(i) for sorted x.
+        ranks = np.arange(1, n + 1)
+        return float(np.sum((2 * ranks - n - 1) * values) / (n * total))
 
     def _compute_column(self, real_col: pd.Series, synth_col: pd.Series) -> float:
         """
         Compute Gini Delta for a single column.
 
-        Args:
-            real_col: Column from real dataset
-            synth_col: Column from synthetic dataset
+        The Gini coefficient is defined for non-negative quantities. Columns
+        whose real values are all non-negative use the raw values (as in the
+        paper). Otherwise both tables are shifted by the real minimum, a
+        shift expressed in the column's own units, so the result does not
+        depend on them. It used to be ``x - min(x) + 1``: the ``+ 1`` is one
+        unit (euros or cents gave different Ginis) and each table used its
+        own minimum.
 
         Returns:
-            Absolute Gini difference in [0, 1], lower is better
+            ``|G_real - G_synth|`` clipped to [0, 1], lower is better
         """
-        gini_real = self._compute_gini(real_col.values)
-        gini_synth = self._compute_gini(synth_col.values)
-
-        return abs(gini_real - gini_synth)
+        real = real_col.to_numpy(dtype=float)
+        synth = synth_col.to_numpy(dtype=float)
+        shift = min(0.0, float(real.min()))
+        gini_real = self._compute_gini(real - shift)
+        gini_synth = self._compute_gini(synth - shift)
+        return float(min(1.0, abs(gini_real - gini_synth)))

@@ -1,5 +1,6 @@
 """Logging configuration for the METIS framework."""
 
+import contextlib
 import logging
 import sys
 import warnings
@@ -13,7 +14,10 @@ def setup_logging(
     suppress_warnings: bool = True,
 ) -> None:
     """
-    Configure logging for the application.
+    Configure logging for an application entry point (the ``metis`` CLI).
+
+    It replaces the root logger's handlers and, with ``suppress_warnings``,
+    installs process-wide warning filters: never call it from library code.
 
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
@@ -59,7 +63,13 @@ def _create_handlers(log_file: str | None) -> list:
     """Create logging handlers for console and optional file output."""
     handlers = []
 
-    # Console handler
+    # Console handler.  Log messages contain non-ASCII characters (arrows,
+    # dashes): on a cp1252 Windows console they raised UnicodeEncodeError
+    # inside the handler, so unencodable characters are escaped instead.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        with contextlib.suppress(ValueError, OSError):  # exotic streams
+            reconfigure(errors="backslashreplace")
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     handlers.append(console_handler)
@@ -69,7 +79,7 @@ def _create_handlers(log_file: str | None) -> list:
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        file_handler = logging.FileHandler(log_file)
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
         file_handler.setLevel(logging.DEBUG)
         handlers.append(file_handler)
 
@@ -89,5 +99,8 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-# Configure default logging on import
-setup_logging()
+# A library must not configure the host's logging: importing METIS used to
+# call ``setup_logging()``, which cleared the root logger's handlers, set its
+# level and silenced FutureWarning / DeprecationWarning for the whole process.
+# Applications (and the ``metis`` CLI) call :func:`setup_logging` themselves;
+# without it, WARNING and above still reach stderr (``logging.lastResort``).

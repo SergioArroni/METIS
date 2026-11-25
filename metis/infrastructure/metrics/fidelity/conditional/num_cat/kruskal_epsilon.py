@@ -56,11 +56,9 @@ class KruskalEpsilonMetric(NumCatPairMetric):
             tuple of (real_epsilon_squared, synth_epsilon_squared)
         """
         # Build groups for real data
-        real_df = pd.DataFrame({"num": real_col1, "cat": real_col2})
-        synth_df = pd.DataFrame({"num": synth_col1, "cat": synth_col2})
 
-        real_groups = [g["num"].values for _, g in real_df.groupby("cat") if len(g) > 1]
-        synth_groups = [g["num"].values for _, g in synth_df.groupby("cat") if len(g) > 1]
+        real_groups = self._groups(real_col1, real_col2)
+        synth_groups = self._groups(synth_col1, synth_col2)
 
         if len(real_groups) < 2 or len(synth_groups) < 2:
             raise ValueError("Need at least 2 groups with >1 element each")
@@ -68,8 +66,9 @@ class KruskalEpsilonMetric(NumCatPairMetric):
         r_stat, _ = kruskal(*real_groups)
         s_stat, _ = kruskal(*synth_groups)
 
-        # Epsilon-squared = H / (n - 1)
-        r_eps = r_stat / (len(real_df) - 1)
-        s_eps = s_stat / (len(synth_df) - 1)
+        # Epsilon-squared = H / (n - 1), with n the rows in the groups tested
+        # (groups with a single row are dropped by ``_groups``).
+        r_eps = r_stat / (sum(len(g) for g in real_groups) - 1)
+        s_eps = s_stat / (sum(len(g) for g in synth_groups) - 1)
 
         return r_eps, s_eps

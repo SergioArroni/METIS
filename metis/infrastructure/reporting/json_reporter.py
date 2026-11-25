@@ -115,6 +115,10 @@ class JSONReporter:
             ),
         }
 
+        # Domain rules: always shown, apart from the scores (they never enter one)
+        if run_summary.artifacts and run_summary.artifacts.get("constraints"):
+            summary["constraints"] = run_summary.artifacts["constraints"]
+
         # Add multi-run statistics if available
         if run_summary.artifacts and "multi_run_stats" in run_summary.artifacts:
             summary["multi_run_statistics"] = run_summary.artifacts["multi_run_stats"]
@@ -134,15 +138,11 @@ class JSONReporter:
                     [
                         c
                         for c, t in schema_applied.items()
-                        if t in ("continuous", "discrete", "ordinal", "datetime")
+                        if t in ("continuous", "discrete", "ordinal")
                     ]
                 ),
                 "categorical_columns": len(
-                    [
-                        c
-                        for c, t in schema_applied.items()
-                        if t in ("categorical", "boolean", "text", "code_numeric")
-                    ]
+                    [c for c, t in schema_applied.items() if t == "nominal"]
                 ),
             }
 

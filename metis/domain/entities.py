@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -63,15 +64,28 @@ class EvalPlan:
             raise ValueError("CV splits must be at least 2")
 
 
+MetricStatus = Literal["ok", "not_applicable", "error"]
+METRIC_STATUSES: tuple[str, ...] = ("ok", "not_applicable", "error")
+
+
 @dataclass(frozen=True)
 class MetricResult:
-    """Result from a single metric computation."""
+    """Result from a single metric computation.
+
+    ``status`` tells apart the three outcomes that all used to look like a
+    NaN: ``ok`` (finite value), ``not_applicable`` (the metric does not apply
+    to these data or this configuration, e.g. no numeric column, no holdout;
+    ``details["reason"]`` says why) and ``error`` (it should have worked and
+    failed; ``details["error"]``).  When not given it is derived from the
+    value and ``details["not_applicable"]``.
+    """
 
     id: str
     value: float
     details: dict[str, Any]
     family: Literal["fidelity", "utility", "privacy"]
     purpose_tags: set[str] = field(default_factory=set)
+    status: MetricStatus | Literal[""] = ""
 
     def __post_init__(self) -> None:
         """Validate metric result after initialization."""
@@ -79,6 +93,40 @@ class MetricResult:
             raise ValueError("Metric ID cannot be empty")
         if self.family not in {"fidelity", "utility", "privacy"}:
             raise ValueError(f"Invalid family: {self.family}")
+        status = self.status or _derive_status(self.value, self.details)
+        if status not in METRIC_STATUSES:
+            raise ValueError(f"Invalid status: {status!r} (expected one of {METRIC_STATUSES})")
+        object.__setattr__(self, "status", status)
+
+    @classmethod
+    def not_applicable(
+        cls,
+        metric_id: str,
+        family: Literal["fidelity", "utility", "privacy"],
+        reason: str,
+        purpose_tags: set[str] | None = None,
+        **details: Any,
+    ) -> MetricResult:
+        """NaN result for a metric that does not apply, with the reason."""
+        return cls(
+            id=metric_id,
+            value=float("nan"),
+            details={"not_applicable": True, "reason": reason, **details},
+            family=family,
+            purpose_tags=purpose_tags or set(),
+            status="not_applicable",
+        )
+
+
+def _derive_status(value: Any, details: dict[str, Any] | None) -> str:
+    if details and details.get("not_applicable") is True:
+        return "not_applicable"
+    if details and "error" in details:
+        return "error"
+    try:
+        return "ok" if math.isfinite(float(value)) else "error"
+    except (TypeError, ValueError):
+        return "error"
 
 
 @dataclass(frozen=True)

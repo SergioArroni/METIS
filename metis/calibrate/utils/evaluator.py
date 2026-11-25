@@ -4,6 +4,7 @@ Uses the Orchestrator's public evaluate_dataframes() API to run evaluations
 directly on DataFrames without any disk I/O.
 """
 
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -43,10 +44,21 @@ class InMemoryEvaluator:
             self.config_template["data"]["schema"] = filter_schema_columns(schema)
 
     def evaluate(
-        self, real_data: pd.DataFrame, synth_data: pd.DataFrame, seed: int
+        self,
+        real_data: pd.DataFrame,
+        synth_data: pd.DataFrame,
+        seed: int,
+        *,
+        holdout: pd.DataFrame | None = None,
+        families: tuple[str, ...] | None = None,
     ) -> tuple[dict[str, float], dict[str, dict[str, float]], dict[str, dict[str, float]]]:
         """
         Run evaluation and extract family scores AND per-metric values.
+
+        ``holdout`` reaches the metrics as in a normal evaluation.
+        ``families`` restricts the configured metrics to those families (the
+        calibration never evaluates utility, and each lower reference only
+        the family it anchors).
 
         Returns:
             Tuple of (family_scores, metric_values_by_family, raw_values_by_family).
@@ -68,6 +80,8 @@ class InMemoryEvaluator:
                 col: spec for col, spec in schema.items() if col in data_columns
             }
 
+        if families is not None:
+            config["metrics"] = self.metrics_of(families)
         orchestrator = Orchestrator()
         run_summary = orchestrator.evaluate_dataframes(
             real_data=real_data,
@@ -75,6 +89,7 @@ class InMemoryEvaluator:
             config=config,
             seed=seed,
             skip_reports=True,
+            holdout=holdout,
         )
 
         # Extract family scores (aggregated by the Orchestrator's Aggregator)
@@ -91,13 +106,70 @@ class InMemoryEvaluator:
         raw_values_by_family: dict[str, dict[str, float]] = {}
 
         for result in run_summary.results:
-            if "error" not in result.details:
+            # NaN without ``error`` exists too (e.g. MIA without holdout):
+            # it would turn every candidate aggregator's score into NaN.
+            if getattr(result, "status", "ok") == "ok" and math.isfinite(float(result.value)):
                 metric_values_by_family.setdefault(result.family, {})[result.id] = result.value
                 raw_values_by_family.setdefault(result.family, {})[result.id] = (
                     self._extract_raw_value(result)
                 )
 
         return family_scores, metric_values_by_family, raw_values_by_family
+
+    def evaluate_results(
+        self,
+        real_data: pd.DataFrame,
+        synth_data: pd.DataFrame,
+        seed: int,
+        *,
+        holdout: pd.DataFrame | None = None,
+        metrics: list[str],
+        ml_efficiency_config: dict | None = None,
+    ) -> list:
+        """The ``MetricResult`` list of *metrics*, details included.
+
+        ``ml_efficiency_config`` entries override the template's ones (the
+        utility signal probe sets ``scale_only`` and ``n_splits``).
+        """
+        from metis.application.orchestrator import Orchestrator
+
+        config = self.config_template.copy()
+        schema = config.get("data", {}).get("schema", {})
+        if schema:
+            config["data"] = {
+                **config["data"],
+                "schema": {c: s for c, s in schema.items() if c in real_data.columns},
+            }
+        config["metrics"] = list(metrics)
+        if ml_efficiency_config:
+            evaluation = dict(config.get("evaluation") or {})
+            evaluation["ml_efficiency_config"] = {
+                **(evaluation.get("ml_efficiency_config") or {}),
+                **ml_efficiency_config,
+            }
+            config["evaluation"] = evaluation
+        run_summary = Orchestrator().evaluate_dataframes(
+            real_data=real_data,
+            synth_data=synth_data,
+            config=config,
+            seed=seed,
+            skip_reports=True,
+            holdout=holdout,
+        )
+        return list(run_summary.results)
+
+    def metrics_of(self, families: tuple[str, ...]) -> list[str]:
+        """The configured metric ids that belong to *families* (shorthands expanded)."""
+        from metis.domain.taxonomy import expand_metric_ids, get_metric_hierarchy
+
+        configured = self.config_template.get("metrics") or self.config_template.get(
+            "evaluation", {}
+        ).get("metric_ids", [])
+        return [
+            m
+            for m in expand_metric_ids(list(configured))
+            if get_metric_hierarchy(m)["family"] in families
+        ]
 
     @staticmethod
     def _extract_raw_value(result) -> float:

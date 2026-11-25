@@ -1,38 +1,16 @@
 """
-Global fidelity metrics package.
+Global fidelity metrics package: relations among more than two variables, the record as a whole.
 
-Measures overall dataset-level similarity between real and synthetic data:
-- Outliers/Coverage: Structural coverage (ranges, outliers, density)
-- Correlation Matrix: Correlation structure preservation
-- MMD: Maximum Mean Discrepancy (kernel-based)
-- Energy Distance: Multivariate statistical distance
-
-Usage:
-    from metis.infrastructure.metrics.fidelity.global_metrics import GlobalAggregator
-
-    aggregator = GlobalAggregator()
-    result = aggregator.compute(real_df, synth_df)
-    print(f"Global Score: {result.score:.4f}")
+Subcategories:
+- distances: MMD and energy distance between the joint distributions
+- detection: a classifier that tries to tell real rows from synthetic ones
 """
 
-from .correlation_matrix import CorrelationMatrixMetric
-from .energy_distance import EnergyDistanceMetric
-from .global_aggregator import DEFAULT_GLOBAL_METRICS, GLOBAL_METRICS_REGISTRY, GlobalAggregator
-from .global_results import GlobalFidelityResult, GlobalMetricResult
-from .mmd import MMDMetric
-from .outliers_coverage import OutliersCoverageMetric
+from .detection import DiscriminatorMetric
+from .distances import EnergyDistanceMetric, MMDMetric
 
 __all__ = [
-    # Aggregator
-    "GlobalAggregator",
-    "GLOBAL_METRICS_REGISTRY",
-    "DEFAULT_GLOBAL_METRICS",
-    # Result structures
-    "GlobalFidelityResult",
-    "GlobalMetricResult",
-    # Individual metrics
-    "OutliersCoverageMetric",
-    "CorrelationMatrixMetric",
-    "MMDMetric",
+    "DiscriminatorMetric",
     "EnergyDistanceMetric",
+    "MMDMetric",
 ]

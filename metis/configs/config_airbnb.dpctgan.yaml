@@ -7,6 +7,21 @@ benchmark:
       epochs: 300
       epsilon: 1.0
       sigma: 1.0
+      # Public bounds (cost no ε): domain limits of the Inside Airbnb schema
+      # and the Barcelona municipal box, rounded, not the observed min/max.
+      # With ~3900 complete training rows, inferring 10 bounds with DP failed.
+      # last_review is a datetime passed as epoch seconds: 2008-01-01..2026-01-01.
+      bounds:
+        availability_365: [0, 365]
+        calculated_host_listings_count: [0, 600]
+        last_review: [1199145600, 1767225600]
+        latitude: [41.30, 41.50]
+        longitude: [2.05, 2.25]
+        minimum_nights: [0, 1125]
+        number_of_reviews: [0, 2000]
+        number_of_reviews_ltm: [0, 1000]
+        price: [0, 10000]
+        reviews_per_month: [0, 100]
   n_runs: 5
   output_dir: metis/sota_models/results/benchmark_airbnb_dpctgan_only
   sample_ratio: 1.0
@@ -14,32 +29,31 @@ benchmark:
     alpha: 0.05
     method: friedman-nemenyi
 calibration:
-  n_iterations: 5
+  n_iterations: 10
   n_jobs: 1
   sample_percentage: 100.0
-  tune_aggregators: true
 data:
   real: data/real/airbnb_barcelona.csv
   real_separator: ','
   schema:
-    availability_365: continuous
-    calculated_host_listings_count: continuous
+    availability_365: {type: discrete, step: 1}
+    calculated_host_listings_count: {type: discrete, step: 1}
     host_id: id
-    host_name: text
+    host_name: nominal
     id: id
-    last_review: datetime
-    latitude: geospatial
-    license: text
-    longitude: geospatial
-    minimum_nights: continuous
-    name: text
-    neighbourhood: categorical
-    neighbourhood_group: categorical
-    number_of_reviews: continuous
-    number_of_reviews_ltm: continuous
+    last_review: {type: continuous, datetime: true}
+    latitude: continuous
+    license: nominal
+    longitude: continuous
+    minimum_nights: {type: discrete, step: 1}
+    name: nominal
+    neighbourhood: nominal
+    neighbourhood_group: nominal
+    number_of_reviews: {type: discrete, step: 1}
+    number_of_reviews_ltm: {type: discrete, step: 1}
     price: continuous
-    reviews_per_month: continuous
-    room_type: categorical
+    reviews_per_month: {type: discrete, step: 0.01}
+    room_type: nominal
   synth_separator: None
   synthetic: None
   target: price
@@ -52,12 +66,10 @@ metrics:
 - fidelity.marginal.scales
 - fidelity.marginal.coverage
 - fidelity.conditional
-- utility.tts
 - utility.tstr
-- utility.trts
-- utility.ttrs
-- privacy.dataset_based.attribute_inference
-- privacy.dataset_based.reidentification
+- utility.log_loss
+- privacy.dataset_based.attacks
+- privacy.dataset_based.syntactic
 - privacy.dataset_based.empirical_similarity
 report:
   formats:

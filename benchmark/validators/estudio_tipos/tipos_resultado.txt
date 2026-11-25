@@ -1,0 +1,207 @@
+
+===== fidelity: caída media pareada [mín, máx] · muestras con caída > 0 · z (caída / sd de las buenas, suelo 0,005)
+
+adult: sd de las buenas  formato 0.0026  plano 0.0026  sin ord. 0.0026  deducido 0.0026  completo 0.0015   media buenas  0.998  0.998  0.998  0.998  0.999
+  disc_pares     formato   0.1172 [0.115,0.120] 5/5 z 23.2 | plano     0.1172 [0.115,0.120] 5/5 z 23.2 | sin ord.  0.1172 [0.115,0.120] 5/5 z 23.2 | deducido  0.1172 [0.115,0.120] 5/5 z 23.2 | completo  0.1178 [0.115,0.120] 5/5 z 23.5
+  disc_suave     formato   0.1284 [0.119,0.135] 5/5 z 25.5 | plano     0.1284 [0.119,0.135] 5/5 z 25.5 | sin ord.  0.1284 [0.119,0.135] 5/5 z 25.5 | deducido  0.1284 [0.119,0.135] 5/5 z 25.5 | completo  0.1280 [0.119,0.135] 5/5 z 25.5
+  ord_d1         formato   0.0030 [0.000,0.006] 4/5 z  0.7 | plano     0.0030 [0.000,0.006] 4/5 z  0.7 | sin ord.  0.0030 [0.000,0.006] 4/5 z  0.7 | deducido  0.0030 [0.000,0.006] 4/5 z  0.7 | completo  0.0032 [0.000,0.006] 5/5 z  0.7
+  ord_d2         formato   0.0120 [0.006,0.015] 5/5 z  2.9 | plano     0.0120 [0.006,0.015] 5/5 z  2.9 | sin ord.  0.0120 [0.006,0.015] 5/5 z  2.9 | deducido  0.0120 [0.006,0.015] 5/5 z  2.9 | completo  0.0132 [0.007,0.017] 5/5 z  3.1
+  ord_d4         formato   0.0074 [0.000,0.012] 5/5 z  1.9 | plano     0.0074 [0.000,0.012] 5/5 z  1.9 | sin ord.  0.0074 [0.000,0.012] 5/5 z  1.9 | deducido  0.0074 [0.000,0.012] 5/5 z  1.9 | completo  0.0183 [0.009,0.027] 5/5 z  3.8
+  ord_d8         formato   0.0239 [0.017,0.028] 5/5 z  5.0 | plano     0.0239 [0.017,0.028] 5/5 z  5.0 | sin ord.  0.0239 [0.017,0.028] 5/5 z  5.0 | deducido  0.0239 [0.017,0.028] 5/5 z  5.0 | completo  0.1147 [0.105,0.130] 5/5 z 22.7
+
+adult_cod: sd de las buenas  formato 0.0005  deducido 0.0009  completo 0.0015   media buenas  1.000  0.999  0.999
+  nom_lejano_20  formato   0.3976 [0.396,0.399] 5/5 z 79.7 | deducido  0.3266 [0.321,0.332] 5/5 z 65.7 | completo  0.1734 [0.171,0.176] 5/5 z 34.7
+  nom_vecino_20  formato   0.1886 [0.175,0.195] 5/5 z 38.7 | deducido  0.1594 [0.152,0.165] 5/5 z 31.9 | completo  0.1614 [0.155,0.167] 5/5 z 31.9
+
+airbnb: sd de las buenas  formato 0.0002  plano 0.0002  sin ord. 0.0002  deducido 0.0002  completo 0.0002   media buenas  1.000  1.000  1.000  1.000  1.000
+  disc_pares     formato   0.2450 [0.245,0.245] 5/5 z 49.0 | plano     0.2464 [0.246,0.247] 5/5 z 49.3 | sin ord.  0.2464 [0.246,0.247] 5/5 z 49.3 | deducido  0.2458 [0.245,0.247] 5/5 z 49.2 | completo  0.2464 [0.246,0.247] 5/5 z 49.3
+  disc_suave     formato   0.0974 [0.092,0.103] 5/5 z 19.6 | plano     0.0992 [0.096,0.105] 5/5 z 19.4 | sin ord.  0.0992 [0.096,0.105] 5/5 z 19.4 | deducido  0.0977 [0.093,0.103] 5/5 z 19.4 | completo  0.0992 [0.096,0.105] 5/5 z 19.4
+
+airbnb_cod: sd de las buenas  formato 0.0001  deducido 0.0002  completo 0.0002   media buenas  1.000  1.000  1.000
+  nom_lejano_20  formato   0.1064 [0.098,0.118] 5/5 z 20.5 | deducido  0.0603 [0.058,0.063] 5/5 z 11.9 | completo  0.0609 [0.059,0.064] 5/5 z 12.0
+  nom_vecino_20  formato   0.0569 [0.052,0.062] 5/5 z 11.4 | deducido  0.0735 [0.063,0.090] 5/5 z 13.0 | completo  0.0758 [0.065,0.094] 5/5 z 13.4
+
+cardio: sd de las buenas  formato 0.0043  plano 0.0012  sin ord. 0.0012  deducido 0.0012  completo 0.0054   media buenas  0.996  0.998  0.998  0.998  0.996
+  disc_pares     formato   0.0767 [0.074,0.079] 5/5 z 15.5 | plano     0.0784 [0.075,0.081] 5/5 z 15.7 | sin ord.  0.0784 [0.075,0.081] 5/5 z 15.7 | deducido  0.0784 [0.075,0.081] 5/5 z 15.7 | completo  0.0767 [0.070,0.080] 5/5 z 14.3
+  disc_suave     formato   0.2133 [0.208,0.216] 5/5 z 42.7 | plano     0.2155 [0.211,0.219] 5/5 z 43.0 | sin ord.  0.2155 [0.211,0.219] 5/5 z 43.0 | deducido  0.2155 [0.211,0.219] 5/5 z 43.0 | completo  0.2130 [0.202,0.218] 5/5 z 39.4
+  ord_d1         formato   0.1035 [0.097,0.111] 5/5 z 20.3 | plano     0.0468 [0.043,0.053] 5/5 z  9.0 | sin ord.  0.0468 [0.043,0.053] 5/5 z  9.0 | deducido  0.0468 [0.043,0.053] 5/5 z  9.0 | completo  0.1298 [0.123,0.139] 5/5 z 23.7
+
+rrhh: sd de las buenas  formato 0.0000  plano 0.0000  sin ord. 0.0000  deducido 0.0000  completo 0.0000   media buenas  1.000  1.000  1.000  1.000  1.000
+  disc_pares     formato   0.3019 [0.294,0.313] 5/5 z 59.8 | plano     0.3666 [0.357,0.383] 5/5 z 73.0 | sin ord.  0.3666 [0.357,0.383] 5/5 z 73.0 | deducido  0.3137 [0.303,0.329] 5/5 z 61.3 | completo  0.3239 [0.317,0.336] 5/5 z 64.1
+  disc_suave     formato   0.0401 [0.034,0.047] 5/5 z  7.8 | plano     0.0479 [0.044,0.050] 5/5 z  9.8 | sin ord.  0.0479 [0.044,0.050] 5/5 z  9.8 | deducido  0.0602 [0.057,0.063] 5/5 z 12.0 | completo  0.0435 [0.039,0.045] 5/5 z  8.8
+  ord_d1         formato   0.0217 [0.007,0.041] 5/5 z  3.5 | plano     0.0390 [0.022,0.064] 5/5 z  6.2 | sin ord.  0.0390 [0.022,0.064] 5/5 z  6.2 | deducido  0.0275 [0.013,0.046] 5/5 z  4.1 | completo  0.0439 [0.026,0.068] 5/5 z  7.6
+  ord_d2         formato   0.2034 [0.181,0.232] 5/5 z 38.7 | plano     0.1009 [0.089,0.108] 5/5 z 20.3 | sin ord.  0.1009 [0.089,0.108] 5/5 z 20.3 | deducido  0.0874 [0.074,0.103] 5/5 z 17.3 | completo  0.2201 [0.199,0.250] 5/5 z 41.7
+
+rrhh_cod: sd de las buenas  formato 0.0000  deducido 0.0000  completo 0.0000   media buenas  1.000  1.000  1.000
+  nom_lejano_20  formato   0.0882 [0.072,0.108] 5/5 z 16.1 | deducido  0.1523 [0.123,0.179] 5/5 z 31.2 | completo  0.1550 [0.131,0.189] 5/5 z 31.1
+  nom_vecino_20  formato   0.0249 [0.009,0.048] 5/5 z  4.0 | deducido  0.1388 [0.120,0.150] 5/5 z 28.4 | completo  0.1439 [0.124,0.162] 5/5 z 28.4
+
+telco: sd de las buenas  formato 0.0012  plano 0.0002  sin ord. 0.0002  deducido 0.0002  completo 0.0002   media buenas  0.999  1.000  1.000  1.000  1.000
+  disc_pares     formato   0.0945 [0.089,0.101] 5/5 z 18.7 | plano     0.0780 [0.076,0.079] 5/5 z 15.6 | sin ord.  0.0780 [0.076,0.079] 5/5 z 15.6 | deducido  0.1014 [0.096,0.104] 5/5 z 20.6 | completo  0.0780 [0.076,0.079] 5/5 z 15.6
+  disc_suave     formato   0.0061 [0.003,0.012] 5/5 z  1.1 | plano     0.0053 [0.001,0.010] 5/5 z  1.3 | sin ord.  0.0053 [0.001,0.010] 5/5 z  1.3 | deducido  0.0059 [0.003,0.014] 5/5 z  0.9 | completo  0.0053 [0.001,0.010] 5/5 z  1.3
+
+telco_cod: sd de las buenas  formato 0.0000  deducido 0.0002  completo 0.0002   media buenas  1.000  1.000  1.000
+  nom_lejano_20  formato   0.3101 [0.295,0.326] 5/5 z 61.1 | deducido  0.2148 [0.210,0.218] 5/5 z 43.2 | completo  0.2121 [0.208,0.215] 5/5 z 42.5
+  nom_vecino_20  formato   0.2665 [0.262,0.273] 5/5 z 53.1 | deducido  0.3078 [0.305,0.311] 5/5 z 61.6 | completo  0.3039 [0.302,0.307] 5/5 z 60.8
+
+===== fidelity_raw: caída media pareada [mín, máx] · muestras con caída > 0 · z (caída / sd de las buenas, suelo 0,005)
+
+adult: sd de las buenas  formato 0.0084  plano 0.0084  sin ord. 0.0084  deducido 0.0084  completo 0.0077   media buenas  0.982  0.982  0.982  0.982  0.982
+  disc_pares     formato   0.1215 [0.117,0.128] 5/5 z 14.0 | plano     0.1215 [0.117,0.128] 5/5 z 14.0 | sin ord.  0.1215 [0.117,0.128] 5/5 z 14.0 | deducido  0.1215 [0.117,0.128] 5/5 z 14.0 | completo  0.1203 [0.117,0.125] 5/5 z 15.6
+  disc_suave     formato   0.1305 [0.121,0.137] 5/5 z 15.6 | plano     0.1305 [0.121,0.137] 5/5 z 15.6 | sin ord.  0.1305 [0.121,0.137] 5/5 z 15.6 | deducido  0.1305 [0.121,0.137] 5/5 z 15.6 | completo  0.1291 [0.120,0.136] 5/5 z 16.7
+  ord_d1         formato   0.0090 [0.005,0.012] 5/5 z  1.1 | plano     0.0090 [0.005,0.012] 5/5 z  1.1 | sin ord.  0.0090 [0.005,0.012] 5/5 z  1.1 | deducido  0.0090 [0.005,0.012] 5/5 z  1.1 | completo  0.0083 [0.005,0.012] 5/5 z  1.0
+  ord_d2         formato   0.0180 [0.012,0.021] 5/5 z  2.4 | plano     0.0180 [0.012,0.021] 5/5 z  2.4 | sin ord.  0.0180 [0.012,0.021] 5/5 z  2.4 | deducido  0.0180 [0.012,0.021] 5/5 z  2.4 | completo  0.0178 [0.011,0.025] 5/5 z  2.7
+  ord_d4         formato   0.0129 [0.006,0.017] 5/5 z  1.8 | plano     0.0129 [0.006,0.017] 5/5 z  1.8 | sin ord.  0.0129 [0.006,0.017] 5/5 z  1.8 | deducido  0.0129 [0.006,0.017] 5/5 z  1.8 | completo  0.0150 [0.010,0.018] 5/5 z  2.0
+  ord_d8         formato   0.0287 [0.022,0.033] 5/5 z  3.5 | plano     0.0287 [0.022,0.033] 5/5 z  3.5 | sin ord.  0.0287 [0.022,0.033] 5/5 z  3.5 | deducido  0.0287 [0.022,0.033] 5/5 z  3.5 | completo  0.1016 [0.091,0.116] 5/5 z 13.1
+
+adult_cod: sd de las buenas  formato 0.0015  deducido 0.0069  completo 0.0077   media buenas  0.987  0.981  0.982
+  nom_lejano_20  formato   0.3216 [0.314,0.327] 5/5 z 64.9 | deducido  0.2981 [0.283,0.311] 5/5 z 43.0 | completo  0.1604 [0.154,0.164] 5/5 z 21.0
+  nom_vecino_20  formato   0.1911 [0.178,0.199] 5/5 z 39.3 | deducido  0.1486 [0.141,0.157] 5/5 z 21.3 | completo  0.1514 [0.146,0.159] 5/5 z 19.4
+
+airbnb: sd de las buenas  formato 0.0036  plano 0.0050  sin ord. 0.0050  deducido 0.0038  completo 0.0050   media buenas  0.965  0.962  0.962  0.964  0.962
+  disc_pares     formato   0.2304 [0.225,0.233] 5/5 z 46.6 | plano     0.2343 [0.228,0.237] 5/5 z 47.2 | sin ord.  0.2343 [0.228,0.237] 5/5 z 47.2 | deducido  0.2324 [0.227,0.235] 5/5 z 46.6 | completo  0.2343 [0.228,0.237] 5/5 z 47.2
+  disc_suave     formato   0.0935 [0.088,0.099] 5/5 z 18.5 | plano     0.0952 [0.091,0.100] 5/5 z 18.7 | sin ord.  0.0952 [0.091,0.100] 5/5 z 18.7 | deducido  0.0940 [0.091,0.098] 5/5 z 18.4 | completo  0.0952 [0.091,0.100] 5/5 z 18.7
+
+airbnb_cod: sd de las buenas  formato 0.0024  deducido 0.0038  completo 0.0050   media buenas  0.964  0.964  0.962
+  nom_lejano_20  formato   0.1070 [0.100,0.113] 5/5 z 21.3 | deducido  0.0588 [0.055,0.061] 5/5 z 11.9 | completo  0.0593 [0.055,0.062] 5/5 z 11.8
+  nom_vecino_20  formato   0.0676 [0.058,0.076] 5/5 z 14.3 | deducido  0.0632 [0.058,0.068] 5/5 z 12.3 | completo  0.0652 [0.059,0.072] 5/5 z 12.8
+
+cardio: sd de las buenas  formato 0.0032  plano 0.0087  sin ord. 0.0087  deducido 0.0087  completo 0.0066   media buenas  0.978  0.966  0.966  0.966  0.974
+  disc_pares     formato   0.0804 [0.077,0.083] 5/5 z 16.2 | plano     0.0920 [0.088,0.098] 5/5 z 10.4 | sin ord.  0.0920 [0.088,0.098] 5/5 z 10.4 | deducido  0.0920 [0.088,0.098] 5/5 z 10.4 | completo  0.0888 [0.084,0.094] 5/5 z 13.5
+  disc_suave     formato   0.2029 [0.198,0.205] 5/5 z 40.8 | plano     0.2120 [0.203,0.219] 5/5 z 24.1 | sin ord.  0.2120 [0.203,0.219] 5/5 z 24.1 | deducido  0.2120 [0.203,0.219] 5/5 z 24.1 | completo  0.2081 [0.204,0.214] 5/5 z 31.1
+  ord_d1         formato   0.1128 [0.109,0.117] 5/5 z 22.6 | plano     0.0546 [0.048,0.062] 5/5 z  6.3 | sin ord.  0.0546 [0.048,0.062] 5/5 z  6.3 | deducido  0.0546 [0.048,0.062] 5/5 z  6.3 | completo  0.1323 [0.127,0.137] 5/5 z 20.2
+
+rrhh: sd de las buenas  formato 0.0003  plano 0.0010  sin ord. 0.0010  deducido 0.0011  completo 0.0004   media buenas  0.974  0.972  0.972  0.972  0.973
+  disc_pares     formato   0.2946 [0.290,0.302] 5/5 z 58.3 | plano     0.3163 [0.311,0.327] 5/5 z 63.0 | sin ord.  0.3163 [0.311,0.327] 5/5 z 63.0 | deducido  0.2858 [0.279,0.296] 5/5 z 56.3 | completo  0.2978 [0.293,0.306] 5/5 z 59.3
+  disc_suave     formato   0.0433 [0.036,0.050] 5/5 z  8.5 | plano     0.0485 [0.045,0.052] 5/5 z  9.7 | sin ord.  0.0485 [0.045,0.052] 5/5 z  9.7 | deducido  0.0609 [0.058,0.063] 5/5 z 12.3 | completo  0.0466 [0.043,0.050] 5/5 z  9.4
+  ord_d1         formato   0.0319 [0.016,0.046] 5/5 z  6.2 | plano     0.0344 [0.024,0.056] 5/5 z  5.7 | sin ord.  0.0344 [0.024,0.056] 5/5 z  5.7 | deducido  0.0337 [0.023,0.050] 5/5 z  6.0 | completo  0.0414 [0.026,0.058] 5/5 z  7.5
+  ord_d2         formato   0.1817 [0.169,0.200] 5/5 z 35.1 | plano     0.0781 [0.071,0.088] 5/5 z 15.7 | sin ord.  0.0781 [0.071,0.088] 5/5 z 15.7 | deducido  0.0772 [0.070,0.086] 5/5 z 14.9 | completo  0.1790 [0.166,0.201] 5/5 z 34.9
+
+rrhh_cod: sd de las buenas  formato 0.0007  deducido 0.0011  completo 0.0004   media buenas  0.975  0.972  0.973
+  nom_lejano_20  formato   0.1116 [0.100,0.131] 5/5 z 21.1 | deducido  0.0753 [0.063,0.090] 5/5 z 14.9 | completo  0.0738 [0.061,0.092] 5/5 z 13.5
+  nom_vecino_20  formato   0.0328 [0.015,0.054] 5/5 z  5.5 | deducido  0.0410 [0.030,0.054] 5/5 z  8.4 | completo  0.0414 [0.036,0.050] 5/5 z  7.3
+
+telco: sd de las buenas  formato 0.0071  plano 0.0076  sin ord. 0.0076  deducido 0.0078  completo 0.0076   media buenas  0.977  0.987  0.987  0.982  0.987
+  disc_pares     formato   0.0866 [0.080,0.095] 5/5 z 12.0 | plano     0.0809 [0.078,0.086] 5/5 z 10.6 | sin ord.  0.0809 [0.078,0.086] 5/5 z 10.6 | deducido  0.0863 [0.083,0.089] 5/5 z 11.1 | completo  0.0809 [0.078,0.086] 5/5 z 10.6
+  disc_suave     formato   0.0078 [0.005,0.014] 5/5 z  0.9 | plano     0.0126 [0.009,0.018] 5/5 z  1.7 | sin ord.  0.0126 [0.009,0.018] 5/5 z  1.7 | deducido  0.0071 [0.004,0.015] 5/5 z  0.7 | completo  0.0126 [0.009,0.018] 5/5 z  1.7
+
+telco_cod: sd de las buenas  formato 0.0007  deducido 0.0078  completo 0.0076   media buenas  0.982  0.982  0.987
+  nom_lejano_20  formato   0.2354 [0.227,0.242] 5/5 z 47.0 | deducido  0.1583 [0.155,0.162] 5/5 z 20.3 | completo  0.1577 [0.155,0.160] 5/5 z 20.9
+  nom_vecino_20  formato   0.2511 [0.248,0.255] 5/5 z 49.9 | deducido  0.2148 [0.210,0.220] 5/5 z 27.5 | completo  0.2165 [0.213,0.223] 5/5 z 28.5
+
+===== composite: caída media pareada [mín, máx] · muestras con caída > 0 · z (caída / sd de las buenas, suelo 0,005)
+
+adult: sd de las buenas  formato 0.0008  plano 0.0008  sin ord. 0.0008  deducido 0.0008  completo 0.0009   media buenas  0.999  0.999  0.999  0.999  0.999
+  disc_pares     formato   0.0440 [0.043,0.045] 5/5 z  8.7 | plano     0.0440 [0.043,0.045] 5/5 z  8.7 | sin ord.  0.0440 [0.043,0.045] 5/5 z  8.7 | deducido  0.0440 [0.043,0.045] 5/5 z  8.7 | completo  0.0439 [0.042,0.045] 5/5 z  8.9
+  disc_suave     formato   0.0488 [0.045,0.051] 5/5 z  9.6 | plano     0.0488 [0.045,0.051] 5/5 z  9.6 | sin ord.  0.0488 [0.045,0.051] 5/5 z  9.6 | deducido  0.0488 [0.045,0.051] 5/5 z  9.6 | completo  0.0484 [0.045,0.051] 5/5 z  9.7
+  ord_d1         formato   0.0008 [-0.001,0.002] 4/5 z  0.2 | plano     0.0008 [-0.001,0.002] 4/5 z  0.2 | sin ord.  0.0008 [-0.001,0.002] 4/5 z  0.2 | deducido  0.0008 [-0.001,0.002] 4/5 z  0.2 | completo  0.0011 [-0.000,0.002] 4/5 z  0.3
+  ord_d2         formato   0.0039 [0.001,0.005] 5/5 z  1.0 | plano     0.0039 [0.001,0.005] 5/5 z  1.0 | sin ord.  0.0039 [0.001,0.005] 5/5 z  1.0 | deducido  0.0039 [0.001,0.005] 5/5 z  1.0 | completo  0.0045 [0.002,0.006] 5/5 z  1.1
+  ord_d4         formato   0.0023 [-0.001,0.004] 4/5 z  0.6 | plano     0.0023 [-0.001,0.004] 4/5 z  0.6 | sin ord.  0.0023 [-0.001,0.004] 4/5 z  0.6 | deducido  0.0023 [-0.001,0.004] 4/5 z  0.6 | completo  0.0060 [0.002,0.009] 5/5 z  1.1
+  ord_d8         formato   0.0080 [0.005,0.010] 5/5 z  1.7 | plano     0.0080 [0.005,0.010] 5/5 z  1.7 | sin ord.  0.0080 [0.005,0.010] 5/5 z  1.7 | deducido  0.0080 [0.005,0.010] 5/5 z  1.7 | completo  0.0424 [0.038,0.049] 5/5 z  8.5
+
+adult_cod: sd de las buenas  formato 0.0005  deducido 0.0010  completo 0.0009   media buenas  1.000  0.999  0.999
+  nom_lejano_20  formato   0.1893 [0.189,0.190] 5/5 z 37.8 | deducido  0.1468 [0.144,0.149] 5/5 z 29.5 | completo  0.0676 [0.066,0.069] 5/5 z 13.6
+  nom_vecino_20  formato   0.0751 [0.069,0.078] 5/5 z 15.2 | deducido  0.0615 [0.059,0.065] 5/5 z 12.2 | completo  0.0623 [0.060,0.064] 5/5 z 12.4
+
+airbnb: sd de las buenas  formato 0.0001  plano 0.0001  sin ord. 0.0001  deducido 0.0001  completo 0.0001   media buenas  1.000  1.000  1.000  1.000  1.000
+  disc_pares     formato   0.1029 [0.103,0.103] 5/5 z 20.6 | plano     0.1037 [0.103,0.104] 5/5 z 20.7 | sin ord.  0.1037 [0.103,0.104] 5/5 z 20.7 | deducido  0.1034 [0.103,0.104] 5/5 z 20.7 | completo  0.1037 [0.103,0.104] 5/5 z 20.7
+  disc_suave     formato   0.0358 [0.034,0.038] 5/5 z  7.2 | plano     0.0365 [0.035,0.039] 5/5 z  7.1 | sin ord.  0.0365 [0.035,0.039] 5/5 z  7.1 | deducido  0.0359 [0.034,0.038] 5/5 z  7.1 | completo  0.0365 [0.035,0.039] 5/5 z  7.1
+
+airbnb_cod: sd de las buenas  formato 0.0002  deducido 0.0001  completo 0.0001   media buenas  1.000  1.000  1.000
+  nom_lejano_20  formato   0.0399 [0.036,0.045] 5/5 z  7.6 | deducido  0.0213 [0.021,0.022] 5/5 z  4.2 | completo  0.0216 [0.021,0.023] 5/5 z  4.2
+  nom_vecino_20  formato   0.0199 [0.018,0.022] 5/5 z  4.0 | deducido  0.0264 [0.022,0.033] 5/5 z  4.6 | completo  0.0273 [0.023,0.034] 5/5 z  4.8
+
+cardio: sd de las buenas  formato 0.0015  plano 0.0003  sin ord. 0.0003  deducido 0.0003  completo 0.0018   media buenas  0.998  0.999  0.999  0.999  0.998
+  disc_pares     formato   0.0279 [0.027,0.029] 5/5 z  5.6 | plano     0.0285 [0.027,0.029] 5/5 z  5.7 | sin ord.  0.0285 [0.027,0.029] 5/5 z  5.7 | deducido  0.0285 [0.027,0.029] 5/5 z  5.7 | completo  0.0281 [0.026,0.029] 5/5 z  5.7
+  disc_suave     formato   0.0874 [0.086,0.089] 5/5 z 17.5 | plano     0.0883 [0.087,0.090] 5/5 z 17.7 | sin ord.  0.0883 [0.087,0.090] 5/5 z 17.7 | deducido  0.0883 [0.087,0.090] 5/5 z 17.7 | completo  0.0873 [0.084,0.089] 5/5 z 17.6
+  ord_d1         formato   0.0394 [0.036,0.043] 5/5 z  7.7 | plano     0.0172 [0.015,0.020] 5/5 z  3.3 | sin ord.  0.0172 [0.015,0.020] 5/5 z  3.3 | deducido  0.0172 [0.015,0.020] 5/5 z  3.3 | completo  0.0500 [0.048,0.054] 5/5 z  9.7
+
+rrhh: sd de las buenas  formato 0.0019  plano 0.0042  sin ord. 0.0042  deducido 0.0003  completo 0.0163   media buenas  0.998  0.998  0.998  1.000  0.991
+  disc_pares     formato   0.1322 [0.129,0.137] 5/5 z 26.2 | plano     0.1699 [0.165,0.181] 5/5 z 33.7 | sin ord.  0.1699 [0.165,0.181] 5/5 z 33.7 | deducido  0.1396 [0.133,0.148] 5/5 z 27.1 | completo  0.1453 [0.133,0.158] 5/5 z  8.7
+  disc_suave     formato   0.0134 [0.010,0.019] 5/5 z  2.6 | plano     0.0173 [0.012,0.024] 5/5 z  3.4 | sin ord.  0.0173 [0.012,0.024] 5/5 z  3.4 | deducido  0.0211 [0.020,0.022] 5/5 z  4.2 | completo  0.0172 [-0.005,0.047] 4/5 z  0.9
+  ord_d1         formato   0.0074 [0.004,0.014] 5/5 z  1.3 | plano     0.0124 [0.001,0.023] 5/5 z  2.0 | sin ord.  0.0124 [0.001,0.023] 5/5 z  2.0 | deducido  0.0093 [0.004,0.016] 5/5 z  1.4 | completo  0.0097 [-0.015,0.023] 4/5 z  0.9
+  ord_d2         formato   0.0810 [0.067,0.096] 5/5 z 15.4 | plano     0.0355 [0.029,0.040] 5/5 z  7.4 | sin ord.  0.0355 [0.029,0.040] 5/5 z  7.4 | deducido  0.0318 [0.026,0.038] 5/5 z  6.4 | completo  0.0815 [0.047,0.104] 5/5 z  5.2
+
+rrhh_cod: sd de las buenas  formato 0.0222  deducido 0.0003  completo 0.0125   media buenas  0.990  1.000  0.994
+  nom_lejano_20  formato   0.0339 [0.026,0.038] 5/5 z  1.7 | deducido  0.0589 [0.045,0.071] 5/5 z 12.1 | completo  0.0630 [0.049,0.075] 5/5 z  5.2
+  nom_vecino_20  formato   0.0101 [0.003,0.017] 5/5 z  0.5 | deducido  0.0535 [0.045,0.061] 5/5 z 10.7 | completo  0.0590 [0.053,0.067] 5/5 z  4.6
+
+telco: sd de las buenas  formato 0.0006  plano 0.0001  sin ord. 0.0001  deducido 0.0001  completo 0.0001   media buenas  1.000  1.000  1.000  1.000  1.000
+  disc_pares     formato   0.0346 [0.032,0.037] 5/5 z  6.8 | plano     0.0281 [0.027,0.029] 5/5 z  5.6 | sin ord.  0.0281 [0.027,0.029] 5/5 z  5.6 | deducido  0.0374 [0.035,0.038] 5/5 z  7.6 | completo  0.0281 [0.027,0.029] 5/5 z  5.6
+  disc_suave     formato   0.0022 [0.001,0.004] 5/5 z  0.4 | plano     0.0018 [0.000,0.004] 5/5 z  0.4 | sin ord.  0.0018 [0.000,0.004] 5/5 z  0.4 | deducido  0.0021 [0.001,0.005] 5/5 z  0.3 | completo  0.0018 [0.000,0.004] 5/5 z  0.4
+
+telco_cod: sd de las buenas  formato 0.0000  deducido 0.0001  completo 0.0001   media buenas  1.000  1.000  1.000
+  nom_lejano_20  formato   0.1378 [0.130,0.147] 5/5 z 27.0 | deducido  0.0879 [0.085,0.089] 5/5 z 17.7 | completo  0.0865 [0.085,0.088] 5/5 z 17.3
+  nom_vecino_20  formato   0.1141 [0.111,0.117] 5/5 z 22.7 | deducido  0.1364 [0.135,0.138] 5/5 z 27.3 | completo  0.1343 [0.133,0.136] 5/5 z 26.8
+
+===== validez: caída media pareada [mín, máx] · muestras con caída > 0 · z (caída / sd de las buenas, suelo 0,005)
+
+adult: sd de las buenas  formato nan  plano nan  sin ord. 0.0000  deducido 0.0000  completo 0.0000   media buenas  nan  nan  1.000  1.000  1.000
+  disc_pares     formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  disc_suave     formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  ord_d1         formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  ord_d2         formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  ord_d4         formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  ord_d8         formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+
+adult_cod: sd de las buenas  formato nan  deducido 0.0000  completo 0.0000   media buenas  nan  1.000  1.000
+  nom_lejano_20  formato   — | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  nom_vecino_20  formato   — | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+
+airbnb: sd de las buenas  formato nan  plano nan  sin ord. 0.0000  deducido 0.0000  completo 0.0000   media buenas  nan  nan  1.000  1.000  1.000
+  disc_pares     formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  disc_suave     formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+
+airbnb_cod: sd de las buenas  formato nan  deducido 0.0000  completo 0.0000   media buenas  nan  1.000  1.000
+  nom_lejano_20  formato   — | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  nom_vecino_20  formato   — | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+
+cardio: sd de las buenas  formato nan  plano nan  sin ord. 0.0000  deducido 0.0009  completo 0.0000   media buenas  nan  nan  1.000  0.998  1.000
+  disc_pares     formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  disc_suave     formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  ord_d1         formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+
+rrhh: sd de las buenas  formato nan  plano nan  sin ord. 0.0000  deducido 0.0023  completo 0.0000   media buenas  nan  nan  1.000  0.997  1.000
+  disc_pares     formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0185 [0.008,0.025] 5/5 z  4.4 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  disc_suave     formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0093 [0.003,0.014] 5/5 z  2.2 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  ord_d1         formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  ord_d2         formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+
+rrhh_cod: sd de las buenas  formato nan  deducido 0.0023  completo 0.0000   media buenas  nan  0.997  1.000
+  nom_lejano_20  formato   — | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  nom_vecino_20  formato   — | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+
+telco: sd de las buenas  formato nan  plano nan  sin ord. 0.0000  deducido 0.0000  completo 0.0000   media buenas  nan  nan  1.000  1.000  1.000
+  disc_pares     formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  disc_suave     formato   — | plano     — | sin ord.  0.0000 [0.000,0.000] 0/5 z  0.0 | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+
+telco_cod: sd de las buenas  formato nan  deducido 0.0000  completo 0.0000   media buenas  nan  1.000  1.000
+  nom_lejano_20  formato   — | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+  nom_vecino_20  formato   — | deducido  0.0000 [0.000,0.000] 0/5 z  0.0 | completo  0.0000 [0.000,0.000] 0/5 z  0.0
+
+===== razón de caídas en fidelidad, completo / otro esquema, por muestra (mín de las cinco)
+  adult     disc_pares     formato media   1.0 mín   1.0 (3/5) | plano media   1.0 mín   1.0 (3/5) | sin ord. media   1.0 mín   1.0 (3/5) | deducido media   1.0 mín   1.0 (3/5)
+  adult     disc_suave     formato media   1.0 mín   1.0 (1/5) | plano media   1.0 mín   1.0 (1/5) | sin ord. media   1.0 mín   1.0 (1/5) | deducido media   1.0 mín   1.0 (1/5)
+  adult     ord_d1         formato media   1.1 mín   1.0 (5/5) | plano media   1.1 mín   1.0 (5/5) | sin ord. media   1.1 mín   1.0 (5/5) | deducido media   1.1 mín   1.0 (5/5)
+  adult     ord_d2         formato media   1.1 mín   1.1 (5/5) | plano media   1.1 mín   1.1 (5/5) | sin ord. media   1.1 mín   1.1 (5/5) | deducido media   1.1 mín   1.1 (5/5)
+  adult     ord_d4         formato media   2.5 mín   1.6 (5/5) | plano media   2.5 mín   1.6 (5/5) | sin ord. media   2.5 mín   1.6 (5/5) | deducido media   2.5 mín   1.6 (5/5)
+  adult     ord_d8         formato media   4.8 mín   4.5 (5/5) | plano media   4.8 mín   4.5 (5/5) | sin ord. media   4.8 mín   4.5 (5/5) | deducido media   4.8 mín   4.5 (5/5)
+  adult_cod nom_lejano_20  formato media   0.4 mín   0.4 (0/5) | deducido media   0.5 mín   0.5 (0/5)
+  adult_cod nom_vecino_20  formato media   0.9 mín   0.8 (0/5) | deducido media   1.0 mín   1.0 (4/5)
+  airbnb    disc_pares     formato media   1.0 mín   1.0 (5/5) | plano media   1.0 mín   1.0 (0/5) | sin ord. media   1.0 mín   1.0 (0/5) | deducido media   1.0 mín   1.0 (5/5)
+  airbnb    disc_suave     formato media   1.0 mín   1.0 (4/5) | plano media   1.0 mín   1.0 (0/5) | sin ord. media   1.0 mín   1.0 (0/5) | deducido media   1.0 mín   1.0 (4/5)
+  airbnb_cod nom_lejano_20  formato media   0.6 mín   0.5 (0/5) | deducido media   1.0 mín   1.0 (3/5)
+  airbnb_cod nom_vecino_20  formato media   1.3 mín   1.1 (5/5) | deducido media   1.0 mín   1.0 (5/5)
+  cardio    disc_pares     formato media   1.0 mín   1.0 (3/5) | plano media   1.0 mín   0.9 (0/5) | sin ord. media   1.0 mín   0.9 (0/5) | deducido media   1.0 mín   0.9 (0/5)
+  cardio    disc_suave     formato media   1.0 mín   1.0 (4/5) | plano media   1.0 mín   1.0 (0/5) | sin ord. media   1.0 mín   1.0 (0/5) | deducido media   1.0 mín   1.0 (0/5)
+  cardio    ord_d1         formato media   1.3 mín   1.2 (5/5) | plano media   2.8 mín   2.6 (5/5) | sin ord. media   2.8 mín   2.6 (5/5) | deducido media   2.8 mín   2.6 (5/5)
+  rrhh      disc_pares     formato media   1.1 mín   1.1 (5/5) | plano media   0.9 mín   0.9 (0/5) | sin ord. media   0.9 mín   0.9 (0/5) | deducido media   1.0 mín   1.0 (4/5)
+  rrhh      disc_suave     formato media   1.1 mín   0.9 (4/5) | plano media   0.9 mín   0.9 (0/5) | sin ord. media   0.9 mín   0.9 (0/5) | deducido media   0.7 mín   0.7 (0/5)
+  rrhh      ord_d1         formato media   2.0 mín   1.7 (5/5) | plano media   1.1 mín   1.1 (5/5) | sin ord. media   1.1 mín   1.1 (5/5) | deducido media   1.6 mín   1.5 (5/5)
+  rrhh      ord_d2         formato media   1.1 mín   1.0 (5/5) | plano media   2.2 mín   2.1 (5/5) | sin ord. media   2.2 mín   2.1 (5/5) | deducido media   2.5 mín   2.3 (5/5)
+  rrhh_cod  nom_lejano_20  formato media   1.8 mín   1.5 (5/5) | deducido media   1.0 mín   1.0 (2/5)
+  rrhh_cod  nom_vecino_20  formato media   5.8 mín   3.1 (5/5) | deducido media   1.0 mín   1.0 (4/5)
+  telco     disc_pares     formato media   0.8 mín   0.8 (0/5) | plano media   1.0 mín   1.0 (0/5) | sin ord. media   1.0 mín   1.0 (0/5) | deducido media   0.8 mín   0.7 (0/5)
+  telco     disc_suave     formato media   0.9 mín   0.3 (2/5) | plano media   1.0 mín   1.0 (0/5) | sin ord. media   1.0 mín   1.0 (0/5) | deducido media   0.9 mín   0.3 (2/5)
+  telco_cod nom_lejano_20  formato media   0.7 mín   0.6 (0/5) | deducido media   1.0 mín   1.0 (0/5)
+  telco_cod nom_vecino_20  formato media   1.1 mín   1.1 (5/5) | deducido media   1.0 mín   1.0 (0/5)

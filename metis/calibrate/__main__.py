@@ -1,7 +1,7 @@
 """METIS Calibration Module - Entry point.
 
 Usage:
-    python -m metis.calibrate --config configs/config_airbnb.yaml --profile balanced
+    python -m metis.calibrate --config configs/config_airbnb.yaml
     python -m metis.calibrate --config configs/config_telco.yaml --iterations 5
 
 This delegates to the unified CLI at metis.interface.cli.

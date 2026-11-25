@@ -11,6 +11,18 @@ class MetricRegistryImpl:
 
     def __init__(self):
         self._metrics: dict[str, type[Metric]] = {}
+        self._defaults_loaded = False
+
+    def _ensure_defaults(self) -> None:
+        """Import the built-in metrics on first use, not when this module loads.
+
+        Registering them at import time made every metric module circular:
+        importing ``chi2_stat`` first imported the registry, which imported
+        ``chi2_stat`` again while it was half-initialised and failed.
+        """
+        if not self._defaults_loaded:
+            self._defaults_loaded = True
+            _register_default_metrics()
 
     def register(self, metric_id: str, metric_class: type[Metric]) -> None:
         """Register a metric implementation."""
@@ -24,6 +36,7 @@ class MetricRegistryImpl:
 
     def get(self, metric_id: str) -> type[Metric]:
         """Retrieve metric class by ID."""
+        self._ensure_defaults()
         if metric_id not in self._metrics:
             available = list(self._metrics.keys())
             raise RegistryError(
@@ -35,6 +48,7 @@ class MetricRegistryImpl:
 
     def list_ids(self, family: str | None = None) -> list[str]:
         """list available metric IDs, optionally filtered by family."""
+        self._ensure_defaults()
         if family is None:
             return list(self._metrics.keys())
 
@@ -43,6 +57,7 @@ class MetricRegistryImpl:
 
     def list_by_family(self) -> dict[str, list[str]]:
         """list metrics grouped by family."""
+        self._ensure_defaults()
         families = {}
         for metric_id in self._metrics:
             if "." in metric_id:
@@ -61,6 +76,7 @@ class MetricRegistryImpl:
         """
         from ...domain.taxonomy import group_metrics_by_hierarchy
 
+        self._ensure_defaults()
         return group_metrics_by_hierarchy(list(self._metrics.keys()))
 
     def get_metric_hierarchy(self, metric_id: str) -> dict[str, str]:
@@ -114,7 +130,6 @@ def _register_default_metrics():
     """Register all built-in metrics."""
     # Import modules to trigger registration via decorators
 
-    # Fidelity metrics - Marginal - Tails
     # Fidelity metrics - Conditional - Cat↔Cat
     from .fidelity.conditional.cat_cat.chi2_stat import Chi2StatMetric
     from .fidelity.conditional.cat_cat.cramers_v import CramersVMetric
@@ -126,16 +141,16 @@ def _register_default_metrics():
     from .fidelity.conditional.num_cat.point_biserial import PointBiserialMetric
 
     # Fidelity metrics - Conditional - Num↔Num
+    from .fidelity.conditional.num_num.correlation_matrix import CorrelationMatrixMetric
     from .fidelity.conditional.num_num.dcor import DistanceCorrelationMetric
     from .fidelity.conditional.num_num.mi import MutualInformationMetric
     from .fidelity.conditional.num_num.pearson import PearsonCorrelationMetric
     from .fidelity.conditional.num_num.spearman import SpearmanCorrelationMetric
 
-    # Fidelity metrics - Global
-    from .fidelity.global_metrics.correlation_matrix import CorrelationMatrixMetric
-    from .fidelity.global_metrics.energy_distance import EnergyDistanceMetric
-    from .fidelity.global_metrics.mmd import MMDMetric
-    from .fidelity.global_metrics.outliers_coverage import OutliersCoverageMetric
+    # Fidelity metrics - Global - Detection and Distances
+    from .fidelity.global_metrics.detection.discriminator import DiscriminatorMetric
+    from .fidelity.global_metrics.distances.energy_distance import EnergyDistanceMetric
+    from .fidelity.global_metrics.distances.mmd import MMDMetric
 
     # Fidelity metrics - Marginal - Coverage
     from .fidelity.marginal.coverage.entropy_delta import ShannonEntropyDeltaMetric
@@ -151,35 +166,24 @@ def _register_default_metrics():
     from .fidelity.marginal.scales.delta_mad import DeltaMADMetric
     from .fidelity.marginal.scales.delta_mean import DeltaMeanMetric
     from .fidelity.marginal.scales.delta_median import DeltaMedianMetric
+
+    # Fidelity metrics - Marginal - Tails
     from .fidelity.marginal.tails.anderson_darling import AndersonDarlingMetric
     from .fidelity.marginal.tails.delta_exceedance import DeltaExceedanceMetric
     from .fidelity.marginal.tails.hellinger import HellingerMetric
     from .fidelity.marginal.tails.kde_ise import KDEISEMetric
     from .fidelity.marginal.tails.ks import KSMetric
+    from .fidelity.marginal.tails.outliers_coverage import OutliersCoverageMetric
     from .fidelity.marginal.tails.wasserstein import WassersteinMetric
 
     # Privacy metrics
-    from .privacy.dataset_based.attribute_inference import inference_attack, mia
+    from .privacy.dataset_based.attacks import inference_attack, mia, record_linkage
     from .privacy.dataset_based.empirical_similarity import dcr, nnaa
-    from .privacy.dataset_based.reidentification import (
-        k_anonymity,
-        l_diversity,
-        record_linkage,
-        t_closeness,
-    )
+    from .privacy.dataset_based.syntactic import k_anonymity, l_diversity, t_closeness
     from .privacy.mechanism_based import differential_privacy
 
-    # Utility metrics — require the optional [ml] extra (catboost, optuna)
-    try:
-        from .utility.ml_efficiency import classification_efficiency, regression_efficiency
-
-        _ = classification_efficiency, regression_efficiency
-    except ImportError:
-        import logging as _logging
-
-        _logging.getLogger(__name__).warning(
-            "Utility metrics (ml_efficiency) not registered: install metis-val[ml] to enable them."
-        )
+    # Utility metrics
+    from .utility.ml_efficiency import classification_efficiency, regression_efficiency
 
     # Suppress unused import warnings - imports trigger decorator registration
     _ = (
@@ -190,6 +194,7 @@ def _register_default_metrics():
         HellingerMetric,
         KDEISEMetric,
         DeltaExceedanceMetric,
+        OutliersCoverageMetric,
         # Fidelity - Marginal - Scales
         DeltaMeanMetric,
         DeltaMedianMetric,
@@ -208,6 +213,7 @@ def _register_default_metrics():
         SpearmanCorrelationMetric,
         DistanceCorrelationMetric,
         MutualInformationMetric,
+        CorrelationMatrixMetric,
         # Fidelity - Conditional - Num↔Cat
         EtaSquaredMetric,
         KruskalEpsilonMetric,
@@ -216,11 +222,10 @@ def _register_default_metrics():
         CramersVMetric,
         Chi2StatMetric,
         TheilsUMetric,
-        # Fidelity - Global
-        CorrelationMatrixMetric,
+        # Fidelity - Global - Distances and Detection
         MMDMetric,
         EnergyDistanceMetric,
-        OutliersCoverageMetric,
+        DiscriminatorMetric,
         # Privacy
         mia,
         inference_attack,
@@ -231,8 +236,7 @@ def _register_default_metrics():
         dcr,
         nnaa,
         differential_privacy,
+        # Utility
+        classification_efficiency,
+        regression_efficiency,
     )
-
-
-# Register defaults on import
-_register_default_metrics()

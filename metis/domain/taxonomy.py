@@ -11,14 +11,23 @@ FAMILIES: set[str] = {"fidelity", "utility", "privacy"}
 
 # Fidelity Metrics - Measure statistical similarity between real and synthetic data
 FIDELITY_METRICS: dict[str, dict[str, list[str]]] = {
+    # Three categories (decisions §25-§26): global measures relations among
+    # more than two variables, the record as a whole; conditional, the pairs;
+    # marginal, each column.  Each subcategory holds metrics that measure the
+    # same thing, so averaging them makes sense (global was a mix with internal
+    # Spearman ρ 0.49; the two distances have 0.99): correlation_matrix went to
+    # num_num and outliers_coverage (a per-column average) to tails.
     "global": {
-        "description": "Structural metrics comparing overall distributions",
-        "metrics": [
-            "fidelity.correlation_matrix",
-            "fidelity.mmd",
-            "fidelity.energy_distance",
-            "fidelity.outliers_coverage",
-        ],
+        "description": "Relations among more than two variables: the record as a whole",
+        "subcategories": {
+            "distances": [
+                "fidelity.mmd",
+                "fidelity.energy_distance",
+            ],
+            "detection": [
+                "fidelity.discriminator",  # classifier two-sample test (CatBoost)
+            ],
+        },
     },
     "marginal": {
         "description": "Per-column distribution comparison",
@@ -30,6 +39,7 @@ FIDELITY_METRICS: dict[str, dict[str, list[str]]] = {
                 "fidelity.hellinger",
                 "fidelity.kde_ise",
                 "fidelity.delta_exceedance",
+                "fidelity.outliers_coverage",
             ],
             "scales": [
                 "fidelity.delta_mean",
@@ -56,6 +66,7 @@ FIDELITY_METRICS: dict[str, dict[str, list[str]]] = {
                 "fidelity.spearman",
                 "fidelity.dcor",  # Distance correlation
                 "fidelity.mi",  # Mutual Information
+                "fidelity.correlation_matrix",
             ],
             "num_cat": [
                 "fidelity.eta_squared",
@@ -76,15 +87,23 @@ PRIVACY_METRICS: dict[str, dict[str, list[str]]] = {
     "dataset_based": {
         "description": "Privacy metrics based on dataset analysis",
         "subcategories": {
-            "attribute_inference": [
+            # The three audited attacks (membership, attribute inference and
+            # linkage) measure the same signal, how close training rows sit to
+            # the synthetic table (correlation >= 0.99 on the leak bench), so
+            # they are one vote of the family median (2026-10-19; until then
+            # attribute_inference = mia + inference_attack and
+            # reidentification = record_linkage, two votes, with mia, a
+            # membership attack, under "attribute inference").  k/l/t are
+            # syntactic privacy models over generalised classes (2026-10-14).
+            "attacks": [
                 "privacy.mia",  # Membership Inference Attack
-                "privacy.inference_attack",  # General Attribute Inference
+                "privacy.inference_attack",  # Attribute inference (nearest neighbour)
+                "privacy.record_linkage",  # Linkage attack
             ],
-            "reidentification": [
+            "syntactic": [
                 "privacy.k_anonymity",
                 "privacy.l_diversity",
                 "privacy.t_closeness",
-                "privacy.record_linkage",
             ],
             "empirical_similarity": [
                 "privacy.dcr",  # Distance to Closest Record
@@ -115,6 +134,12 @@ UTILITY_METRICS: dict[str, dict[str, list[str]]] = {
                 "utility.ml_efficiency",
             ],
         },
+    },
+    "probabilistic": {
+        "description": "How sure the model trained on synthetic data is of the real labels",
+        "metrics": [
+            "utility.log_loss",  # TSTR scored with the log-loss
+        ],
     },
 }
 
@@ -189,7 +214,7 @@ def get_metric_hierarchy(metric_id: str) -> dict[str, str]:
 
     # Fallback: try to infer from metric_id prefix
     if "." in metric_id:
-        family = metric_id.split(".", maxsplit=1)[0]
+        family = metric_id.split(".")[0]
         if family in FAMILIES:
             return {"family": family, "category": "unknown", "subcategory": None}
 

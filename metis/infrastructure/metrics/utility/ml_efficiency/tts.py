@@ -73,4 +73,3 @@ class TTSMetric(BaseStrategyMetric):
     def get_description(self) -> str:
         """Return human-readable description."""
         return "Train on Synthetic, Test on Synthetic (Self-consistency)"
-        return "Train on Synthetic, Test on Synthetic (Self-consistency)"

@@ -66,6 +66,10 @@ class PreprocessingError(METISError):
         super().__init__(full_message)
 
 
+class ReportError(METISError):
+    """Raised when one or more report formats could not be written."""
+
+
 class TypeCastingError(METISError):
     """Raised when type casting/transformation fails."""
 

@@ -8,9 +8,77 @@ from scipy import stats
 
 from ..domain.contracts import BoundsStorage
 from ..domain.entities import EvalPlan, MetricResult
-from ..domain.taxonomy import FAMILIES, group_metrics_by_hierarchy
+from ..domain.taxonomy import (
+    FAMILIES,
+    FIDELITY_METRICS,
+    PRIVACY_METRICS,
+    UTILITY_METRICS,
+    get_metric_hierarchy,
+)
+from ..infrastructure.metrics.aggregation.stochastic_dominance import (
+    DEFAULT_RISK_AVERSION,
+    weighted_fsd_score,
+    weighted_ssd_score,
+)
 from ..infrastructure.runtime.logging import get_logger
 from ..shared.aggregation_registry import get_aggregation_function
+from ..shared.anchors import WARNING_Z
+
+_TAXONOMY_BY_FAMILY: dict[str, dict] = {
+    "fidelity": FIDELITY_METRICS,
+    "privacy": PRIVACY_METRICS,
+    "utility": UTILITY_METRICS,
+}
+
+# Pseudo-subcategory of the metrics listed directly under a category
+# (``fidelity.global``, ``privacy.mechanism_based``).
+_DIRECT = "_direct"
+
+# A node of the hierarchy: (family,), (family, category),
+# (family, category, subcategory) or (family, category, subcategory, metric_id),
+# with subcategory ``_DIRECT`` for metrics that hang from the category.
+NodePath = tuple[str, ...]
+
+
+def _build_weight_keys() -> tuple[dict[str, NodePath], list[str]]:
+    """Every key ``aggregation.weights`` accepts, mapped to its node.
+
+    Canonical keys are the dotted paths of the taxonomy: ``fidelity``,
+    ``fidelity.marginal``, ``fidelity.marginal.tails`` and, for a metric, its
+    full path ``fidelity.marginal.tails.ks`` (``fidelity.global.mmd`` for a
+    metric directly under a category). A metric can also be named by its id
+    (``fidelity.ks``) unless the id is also a category: ``utility.ml_efficiency``
+    is the category, the metric is ``utility.ml_efficiency.aggregate.ml_efficiency``.
+
+    Returns the key map and the sorted canonical keys of families, categories
+    and subcategories (what error messages list).
+    """
+    keys: dict[str, NodePath] = {}
+    metric_ids: dict[str, NodePath] = {}
+    hierarchy_keys: list[str] = []
+    for family in sorted(_TAXONOMY_BY_FAMILY):
+        keys[family] = (family,)
+        hierarchy_keys.append(family)
+        for category, data in _TAXONOMY_BY_FAMILY[family].items():
+            cat_key = f"{family}.{category}"
+            keys[cat_key] = (family, category)
+            hierarchy_keys.append(cat_key)
+            groups = {_DIRECT: data.get("metrics", []), **data.get("subcategories", {})}
+            for sub, ids in groups.items():
+                if sub != _DIRECT:
+                    keys[f"{cat_key}.{sub}"] = (family, category, sub)
+                    hierarchy_keys.append(f"{cat_key}.{sub}")
+                prefix = cat_key if sub == _DIRECT else f"{cat_key}.{sub}"
+                for metric_id in ids:
+                    path = (family, category, sub, metric_id)
+                    keys[f"{prefix}.{metric_id.split('.', 1)[1]}"] = path
+                    metric_ids[metric_id] = path
+    for metric_id, path in metric_ids.items():
+        keys.setdefault(metric_id, path)  # a category of the same name wins
+    return keys, sorted(hierarchy_keys)
+
+
+_WEIGHT_KEYS, _HIERARCHY_WEIGHT_KEYS = _build_weight_keys()
 
 
 class Aggregator:
@@ -26,7 +94,7 @@ class Aggregator:
 
     def __init__(
         self,
-        risk_aversion: float = 5.0,
+        risk_aversion: float = DEFAULT_RISK_AVERSION,
         calibration_bounds_path: str | None = None,
         optimal_aggregators_path: str | None = None,
         calibration_bounds: BoundsStorage | None = None,
@@ -61,65 +129,268 @@ class Aggregator:
     def aggregate(
         self,
         results: list[MetricResult],
-        plan: EvalPlan,  # noqa: ARG002
+        plan: EvalPlan | None = None,  # noqa: ARG002
         weights: dict[str, float] | None = None,
-    ) -> dict[str, Any]:  # noqa: ARG002
+    ) -> dict[str, Any]:
         """
         Aggregate metric results into family scores and hierarchical breakdowns.
 
+        Aggregation is hierarchical: metrics -> subcategory (``level_1``),
+        subcategories -> category (``level_2``) and categories -> family
+        (``level_3``); each level aggregates the *scores of the level below*, so
+        a category weighs the same whatever its number of metrics. The family
+        score is the top of that hierarchy; the composite aggregates families.
+
         Args:
             results: list of computed metric results
-            plan: Evaluation plan used for the run
-            weights: Optional weights for family scoring (defaults to equal weighting)
+            plan: Evaluation plan used for the run (not needed; kept for the
+                pipeline signature, so ``aggregate(results, None, weights)`` works)
+            weights: Optional ``{node: weight}`` over any node of the taxonomy
+                (``aggregation.weights`` in the config):
+
+                * ``"utility"`` — a family, weighed in the composite;
+                * ``"fidelity.global"`` — a category, weighed in its family;
+                * ``"fidelity.marginal.tails"`` — a subcategory, in its category;
+                * ``"fidelity.ks"`` or ``"fidelity.marginal.tails.ks"`` — a
+                  metric, in its subcategory (``fidelity.global.mmd`` for one
+                  directly under a category).
+
+                A node's weight is relative to its siblings only (default 1):
+                ``{"fidelity.marginal.tails": 3}`` makes tails count three times
+                scales or coverage inside ``marginal`` and nothing else. A weight
+                of 0 excludes the node; a node whose children are all excluded
+                has no score. Unequal weights need a weighted aggregator (mean,
+                fsd, ssd, median). Unknown keys, a metric named twice or
+                invalid values raise ``ValueError`` listing the valid keys.
 
         Returns:
             Dictionary containing family scores, hierarchical scores, and metadata
         """
-        aggregates = {}
+        family_weights, node_weights = self._parse_weights(weights)
+        aggregates: dict[str, Any] = {}
 
-        # Calculate family scores
-        family_scores_dict = {}
-        for family in FAMILIES:
-            family_results = [r for r in results if r.family == family]
-            if family_results:
-                family_score = self._calculate_family_score(family_results, family)
-                aggregates[f"{family}_score"] = family_score
-                aggregates[f"{family}_count"] = len(family_results)
-                if np.isfinite(family_score):
-                    family_scores_dict[family] = family_score
-                else:
-                    self.logger.warning(
-                        "Family '%s' score is NaN — excluded from composite",
-                        family,
-                    )
-
-        # Calculate composite score using optimal aggregator (Level 4: Families → Final score)
-        if family_scores_dict:
-            family_scores_array = list(family_scores_dict.values())
-            composite = self._apply_composite_aggregation(family_scores_array)
-            aggregates["composite_score"] = float(composite)
-            aggregates["composite_families"] = list(family_scores_dict.keys())
-
-        # Calculate hierarchical scores (by category and subcategory)
-        hierarchy_scores = self._calculate_hierarchy_scores(results)
-        aggregates["hierarchy"] = hierarchy_scores
-
-        # Apply calibration normalization if available
+        # Level 0: per-metric calibration, before any aggregation.
         if self.calibration_bounds:
-            aggregates = self._apply_calibration_normalization(aggregates)
+            raw_hierarchy = self._calculate_hierarchy_scores(results, node_weights)
+            for family, data in raw_hierarchy.items():
+                # Uncalibrated family scores, for traceability.
+                aggregates[f"{family}_score_raw"] = float(data.get("score", float("nan")))
+            results, calibration = self._calibrate_results(results)
+            aggregates.update(calibration)
+
+        # Levels 1-3: metrics -> subcategories -> categories -> families
+        hierarchy_scores = self._calculate_hierarchy_scores(results, node_weights)
+
+        family_scores_dict = {}
+        for family in sorted(FAMILIES):
+            family_results = [r for r in results if self._family_of(r) == family]
+            if not family_results:
+                continue
+            family_data = hierarchy_scores.get(family, {})
+            family_score = float(family_data.get("score", float("nan")))
+            aggregates[f"{family}_score"] = family_score
+            aggregates[f"{family}_count"] = len(family_results)
+            not_applicable = [r.id for r in family_results if r.status == "not_applicable"]
+            if not_applicable:
+                # Did not apply to these data/config: reported, not a failure.
+                aggregates[f"{family}_not_applicable"] = not_applicable
+            failed = family_data.get("failed_metrics", [])
+            if failed:
+                # The family score only reflects the metrics that worked: flag it.
+                aggregates[f"{family}_failed_metrics"] = failed
+                aggregates[f"{family}_complete"] = False
+            if np.isfinite(family_score):
+                family_scores_dict[family] = family_score
+            else:
+                self.logger.warning(
+                    "Family '%s' score is NaN — excluded from composite",
+                    family,
+                )
+
+        # Level 4: families -> composite
+        self._set_composite(aggregates, family_scores_dict, family_weights)
+        aggregates["hierarchy"] = hierarchy_scores
 
         # Add execution metadata
         aggregates["total_metrics"] = len(results)
         aggregates["successful_metrics"] = len(
             [r for r in results if self._is_valid_metric_result(r)]
         )
-        aggregates["failed_metrics"] = len(results) - aggregates["successful_metrics"]
+        aggregates["not_applicable_metrics"] = len(
+            [r for r in results if r.status == "not_applicable"]
+        )
+        aggregates["failed_metrics"] = (
+            len(results) - aggregates["successful_metrics"] - aggregates["not_applicable_metrics"]
+        )
 
         return aggregates
 
-    def _calculate_hierarchy_scores(self, results: list[MetricResult]) -> dict[str, Any]:
+    # ----- weights --------------------------------------------------------------
+
+    @staticmethod
+    def _parse_weights(
+        weights: dict[str, float] | None,
+    ) -> tuple[dict[str, float], dict[NodePath, float]]:
+        """Validate ``aggregation.weights`` and resolve each key to its node.
+
+        Returns ``(family_weights, {node_path: weight})`` where the node paths
+        are those of ``_build_weight_keys`` (categories, subcategories, metrics).
+        """
+        family_weights: dict[str, float] = {}
+        node_weights: dict[NodePath, float] = {}
+        if not weights:
+            return family_weights, node_weights
+        if not isinstance(weights, dict):
+            raise ValueError(f"aggregation.weights must be a mapping, got {type(weights).__name__}")
+
+        unknown = []
+        seen: dict[NodePath, str] = {}
+        for key, raw in weights.items():
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"aggregation.weights['{key}'] must be a number, got {raw!r}"
+                ) from None
+            if not np.isfinite(value) or value < 0:
+                raise ValueError(
+                    f"aggregation.weights['{key}'] must be finite and >= 0, got {raw!r}"
+                )
+            path = _WEIGHT_KEYS.get(str(key))
+            if path is None:
+                unknown.append(key)
+                continue
+            if path in seen:
+                raise ValueError(
+                    f"aggregation.weights names the same node twice: '{seen[path]}' and '{key}'"
+                )
+            seen[path] = str(key)
+            if len(path) == 1:
+                family_weights[path[0]] = value
+            else:
+                node_weights[path] = value
+
+        if unknown:
+            raise ValueError(
+                f"Unknown aggregation weight key(s): {sorted(map(str, unknown))}. "
+                f"Valid keys: {_HIERARCHY_WEIGHT_KEYS}, or a metric id "
+                "('fidelity.ks') or its full path ('fidelity.marginal.tails.ks')."
+            )
+        return family_weights, node_weights
+
+    def _weighted(self, agg_name: str, values: list[float], weights: list[float]) -> float:
+        """Aggregate ``values`` with ``weights`` using the named aggregator.
+
+        Zero weights drop their value. With equal weights the plain aggregator is
+        used, so results without ``weights`` are unchanged.
+        """
+        pairs = [
+            (float(v), float(w))
+            for v, w in zip(values, weights, strict=True)
+            if np.isfinite(v) and w > 0
+        ]
+        if not pairs:
+            return float("nan")
+        vals = np.array([v for v, _ in pairs])
+        wts = np.array([w for _, w in pairs])
+        if np.allclose(wts, wts[0]):
+            return float(self._build_aggregator(agg_name)(list(vals)))
+        if agg_name in ("mean", "fsd"):
+            return weighted_fsd_score(vals, wts)
+        if agg_name == "ssd":
+            return weighted_ssd_score(vals, wts, risk_aversion=self.risk_aversion)
+        if agg_name == "median":
+            order = np.argsort(vals)
+            cum = np.cumsum(wts[order]) / wts.sum()
+            return float(vals[order][np.searchsorted(cum, 0.5)])
+        raise ValueError(
+            f"Aggregator '{agg_name}' does not support unequal weights; "
+            "use mean, fsd, ssd or median, or drop aggregation.weights"
+        )
+
+    def _set_composite(
+        self,
+        aggregates: dict[str, Any],
+        family_scores: dict[str, float],
+        family_weights: dict[str, float],
+    ) -> None:
+        """Families -> composite, honouring ``aggregation.weights``.
+
+        ``composite_score`` is always present: NaN when no family has a score.
+        """
+        if not family_scores:
+            aggregates["composite_score"] = float("nan")
+            aggregates["composite_families"] = []
+            return
+        families = list(family_scores)
+        weights = [family_weights.get(f, 1.0) for f in families]
+        included = [f for f, w in zip(families, weights, strict=True) if w > 0]
+        if not included:
+            raise ValueError(
+                f"aggregation.weights gives weight 0 to every family with a score: {families}"
+            )
+        composite = self._weighted(
+            self.composite_agg_name, [family_scores[f] for f in families], weights
+        )
+        aggregates["composite_score"] = float(composite)
+        aggregates["composite_families"] = included
+        if family_weights:
+            aggregates["composite_weights"] = dict(zip(families, weights, strict=True))
+
+    # ----- hierarchy ------------------------------------------------------------
+
+    @staticmethod
+    def _family_of(result: MetricResult) -> str:
+        if result.family in FAMILIES:
+            return result.family
+        return get_metric_hierarchy(result.id)["family"]
+
+    def _level_agg_name(self, family: str, level: int) -> str:
+        aggs = getattr(self, f"{family}_aggs", None) or {}
+        default = {1: self.agg_layers_1_2_name, 2: self.agg_layers_1_2_name}.get(
+            level, self.agg_layers_3_4_name
+        )
+        return aggs.get(f"level_{level}", default)
+
+    def _aggregate_level(
+        self,
+        family: str,
+        level: int,
+        values: list[float],
+        weights: list[float] | None = None,
+    ) -> float:
+        """Aggregate one level; zero-weight and non-finite values are dropped first."""
+        if weights is None:
+            weights = [1.0] * len(values)
+        pairs = [
+            (float(v), float(w))
+            for v, w in zip(values, weights, strict=True)
+            if np.isfinite(v) and w > 0
+        ]
+        if not pairs:
+            return float("nan")
+        vals = [v for v, _ in pairs]
+        wts = [w for _, w in pairs]
+        name = self._level_agg_name(family, level)
+        if not np.allclose(wts, wts[0]):
+            return self._weighted(name, vals, wts)
+        tuned = getattr(self, "_family_agg_funcs", {})
+        if level == 3 and family in tuned:
+            return float(tuned[family](vals))
+        return float(self._build_aggregator(name)(vals))
+
+    def _calculate_hierarchy_scores(
+        self,
+        results: list[MetricResult],
+        node_weights: dict[NodePath, float] | None = None,
+    ) -> dict[str, Any]:
         """
         Calculate aggregated scores for each level of the hierarchy.
+
+        Each level aggregates the scores of the level below (never the raw
+        metric values): metrics -> subcategory, subcategories -> category,
+        categories -> family. Metrics that failed (error or non-finite value)
+        are listed under ``failed_metrics`` at every level they belong to.
 
         Returns:
             Nested dictionary with scores at each hierarchy level:
@@ -142,127 +413,121 @@ class Aggregator:
                 }
             }
         """
+        node_weights = node_weights or {}
+        grouped: dict[str, dict[str, dict[str, list[MetricResult]]]] = {}
+        for r in results:
+            family = self._family_of(r)
+            hierarchy = get_metric_hierarchy(r.id)
+            category = hierarchy["category"] if hierarchy["family"] == family else "unknown"
+            subcategory = hierarchy["subcategory"] or _DIRECT
+            grouped.setdefault(family, {}).setdefault(category, {}).setdefault(
+                subcategory, []
+            ).append(r)
+
+        def weight(*path: str) -> float:
+            return node_weights.get(path, 1.0)
+
+        def non_default(names: list[str], path: NodePath) -> dict[str, float]:
+            return {n: weight(*path, n) for n in names if (*path, n) in node_weights}
+
         hierarchy_scores: dict[str, Any] = {}
-
-        # Build result lookup by metric_id
-        result_by_id = {r.id: r for r in results}
-
-        # Group metrics by their hierarchy
-        metric_ids = [r.id for r in results]
-        grouped = group_metrics_by_hierarchy(metric_ids)
-
         for family, categories in grouped.items():
             family_data: dict[str, Any] = {"categories": {}}
-            family_values = []
+            family_failed: list[str] = []
+            cat_names: list[str] = []
+            cat_scores: list[float] = []
+            n_valid_family = 0
 
             for category, subcategories in categories.items():
                 category_data: dict[str, Any] = {}
-                category_values = []
+                category_failed: list[str] = []
+                sub_names: list[str] = []
+                sub_scores: list[float] = []
+                n_valid_category = 0
 
-                for subcategory, metric_ids_list in subcategories.items():
-                    # Get values for these metrics
-                    subcat_values = []
-                    subcat_metrics = []
-                    skipped_ids = []
-                    for mid in metric_ids_list:
-                        if mid in result_by_id:
-                            r = result_by_id[mid]
-                            if self._is_valid_metric_result(r):
-                                subcat_values.append(r.value)
-                                # Extract just the metric name (after the family prefix)
-                                metric_name = mid.split(".")[-1] if "." in mid else mid
-                                subcat_metrics.append(metric_name)
-                            else:
-                                skipped_ids.append(mid)
-                    if skipped_ids:
+                for subcategory, sub_results in subcategories.items():
+                    valid_results = [r for r in sub_results if self._is_valid_metric_result(r)]
+                    values = [r.value for r in valid_results]
+                    names = [r.id.split(".")[-1] for r in valid_results]
+                    metric_weights = [
+                        weight(family, category, subcategory, f"{family}.{n}") for n in names
+                    ]
+                    failed = [
+                        r.id
+                        for r in sub_results
+                        if not self._is_valid_metric_result(r) and r.status != "not_applicable"
+                    ]
+                    if failed:
+                        category_failed.extend(failed)
                         self.logger.warning(
-                            "Hierarchy '%s.%s.%s': skipping non-finite metric(s): %s",
+                            "Hierarchy '%s.%s.%s': skipping non-finite/errored metric(s): %s",
                             family,
                             category,
                             subcategory,
-                            skipped_ids,
+                            failed,
                         )
+                    if not values:
+                        continue
 
-                    if subcat_values:
-                        # Layer 1: Metrics → Subcategories (use layers_1_2 aggregator)
-                        subcat_score = self._apply_aggregation(subcat_values, "1_2")
-                        category_values.extend(subcat_values)
+                    # Level 1: metrics -> subcategory
+                    sub_score = self._aggregate_level(family, 1, values, metric_weights)
+                    sub_names.append(subcategory)
+                    sub_scores.append(sub_score)
+                    n_valid_category += len(values)
+                    full_ids = [f"{family}.{n}" for n in names]
+                    applied = non_default(full_ids, (family, category, subcategory))
 
-                        if subcategory == "_direct":
-                            # Metrics directly under category (no subcategory)
-                            category_data["score"] = subcat_score
-                            category_data["metrics"] = subcat_metrics
-                        else:
-                            if "subcategories" not in category_data:
-                                category_data["subcategories"] = {}
-                            category_data["subcategories"][subcategory] = {
-                                "score": subcat_score,
-                                "count": len(subcat_metrics),
-                                "metrics": subcat_metrics,
-                            }
+                    if subcategory == _DIRECT:
+                        category_data["metrics"] = names
+                        if applied:
+                            category_data["metric_weights"] = applied
+                    else:
+                        category_data.setdefault("subcategories", {})[subcategory] = {
+                            "score": sub_score,
+                            "count": len(values),
+                            "metrics": names,
+                            **({"metric_weights": applied} if applied else {}),
+                            **(
+                                {"weight": weight(family, category, subcategory)}
+                                if (family, category, subcategory) in node_weights
+                                else {}
+                            ),
+                            **({"failed_metrics": failed} if failed else {}),
+                        }
 
-                # Calculate category score
-                # Layer 2: Subcategories → Categories (use layers_1_2 aggregator)
-                if category_values:
-                    category_data["score"] = self._apply_aggregation(category_values, "1_2")
-                    category_data["count"] = len(category_values)
-                    family_values.extend(category_values)
+                # Level 2: subcategories -> category
+                if sub_scores:
+                    sub_weights = [weight(family, category, s) for s in sub_names]
+                    category_data["score"] = self._aggregate_level(
+                        family, 2, sub_scores, sub_weights
+                    )
+                    category_data["count"] = n_valid_category
+                    cat_names.append(category)
+                    cat_scores.append(category_data["score"])
+                    n_valid_family += n_valid_category
+                if (family, category) in node_weights:
+                    category_data["weight"] = weight(family, category)
+                if category_failed:
+                    category_data["failed_metrics"] = category_failed
+                    family_failed.extend(category_failed)
 
                 family_data["categories"][category] = category_data
 
-            # Calculate family score
-            # Layer 3: Categories → Families (use layers_3_4 aggregator)
-            if family_values:
-                family_data["score"] = self._apply_aggregation(family_values, "3_4")
-                family_data["count"] = len(family_values)
+            # Level 3: categories -> family
+            if cat_scores:
+                weights = [weight(family, c) for c in cat_names]
+                family_data["score"] = self._aggregate_level(family, 3, cat_scores, weights)
+                family_data["count"] = n_valid_family
+                applied = non_default(cat_names, (family,))
+                if applied:
+                    family_data["category_weights"] = dict(zip(cat_names, weights, strict=True))
+            if family_failed:
+                family_data["failed_metrics"] = family_failed
+                family_data["complete"] = False
 
             hierarchy_scores[family] = family_data
 
         return hierarchy_scores
-
-    def _calculate_family_score(self, family_results: list[MetricResult], family: str) -> float:
-        """
-        Calculate aggregated score for a metric family.
-
-        Uses the per-family tuned aggregator when available (from
-        calibration's ``tune_from_metrics``), otherwise falls back to
-        the generic ``agg_func_3_4``.
-
-        Args:
-            family_results: Results for metrics in this family
-            family: Family name used to look up tuned aggregator
-
-        Returns:
-            Aggregated score for the family (0.0 to 1.0)
-        """
-        if not family_results:
-            return float("nan")
-
-        # Filter out failed metrics
-        successful_results = [r for r in family_results if self._is_valid_metric_result(r)]
-        skipped = [r for r in family_results if not self._is_valid_metric_result(r)]
-        if skipped:
-            self.logger.warning(
-                "Family '%s': skipping %d non-finite/errored metric(s) from aggregation: %s",
-                family,
-                len(skipped),
-                [r.id for r in skipped],
-            )
-        if not successful_results:
-            self.logger.warning(
-                "Family '%s': all %d metric(s) are non-finite/errored — family score is NaN",
-                family,
-                len(family_results),
-            )
-            return float("nan")
-
-        values = [r.value for r in successful_results]
-
-        # Use family-specific tuned aggregator if available
-        if hasattr(self, "_family_agg_funcs") and family in self._family_agg_funcs:
-            return float(self._family_agg_funcs[family](values))
-
-        return self._apply_aggregation(values, "3_4")
 
     def _setup_aggregation_functions(self) -> None:
         """
@@ -402,24 +667,43 @@ class Aggregator:
         """Set default aggregation configuration."""
         self.logger.info("Using default aggregation configuration")
 
-        # Default configuration: median for per-family (robust to outliers),
-        # SSD for composite (penalises imbalance across families).
+        # Default configuration: SSD for each family and the composite
+        # (penalises imbalance).  Below it, the mean in every family.
         self.agg_layers_1_2_name = "median"
         self.agg_layers_3_4_name = "ssd"
 
+        # Fidelity: the mean in levels 1 (metrics -> subcategory) and 2
+        # (subcategories -> category).  A median of 3 subcategories, or of the
+        # 6 coverage metrics, ignores a defect that only some of them see:
+        # with injected defects (2400 evaluations, 3 tables x 10 ways of
+        # reading the ordinals x 8 defects) the fidelity score detected 70 %
+        # of them (z >= 3) with medians and 84 % with means, and no defect the
+        # median detected was lost.  SSD there detects 88 % but lets a single
+        # broken metric drag the whole score.  Decision of 2026-10-20,
+        # ``docs/auditoria/2026-10-09-decisiones-de-metodo.md`` §19.
         self.fidelity_aggs = {
-            "level_1": "median",
-            "level_2": "median",
+            "level_1": "mean",
+            "level_2": "mean",
             "level_3": "ssd",
         }
+        # Privacy: the mean too (2026-10-21).  With the median the two nearly
+        # blind subcategories (syntactic, empirical_similarity) outvoted the
+        # attacks: a synthetic table with 10 % of its rows copied from the
+        # training data scored 0.89.  With injected leaks in 4 tables the
+        # score drops 0.10 / 0.31 / 0.37 / 0.48 for 1 / 5 / 10 / 25 % copies
+        # (median: 0.01 / 0.06 / 0.11 / 0.25), with no drop when nothing
+        # leaks.  §20 of the method decisions.
         self.privacy_aggs = {
-            "level_1": "median",
-            "level_2": "median",
+            "level_1": "mean",
+            "level_2": "mean",
             "level_3": "ssd",
         }
+        # Utility: the mean as well (2026-11-07).  It used to keep the old
+        # median default, but each utility node holds one model in practice
+        # (TSTR scored with the AUC, and with the log-loss), so the two agree.
         self.utility_aggs = {
-            "level_1": "median",
-            "level_2": "median",
+            "level_1": "mean",
+            "level_2": "mean",
             "level_3": "ssd",
         }
         self.composite_agg_name = "ssd"
@@ -475,44 +759,94 @@ class Aggregator:
 
         return float(stats.gmean(values_array))
 
-    def _apply_calibration_normalization(self, aggregates: dict[str, Any]) -> dict[str, Any]:
+    def _calibrate_results(
+        self, results: list[MetricResult]
+    ) -> tuple[list[MetricResult], dict[str, Any]]:
+        """Rescale every calibrated metric to its own anchors (level 0).
+
+        ``clip((s − lower) / (upper − lower), 0, 1)`` per metric (see
+        ``metis.calibrate.core.bounds``); the hierarchy then aggregates the
+        calibrated values.  Utility metrics and metrics without bounds keep
+        their value.  A metric whose anchors are within its noise is set
+        aside as ``not_applicable`` with ``details["calibration"]`` saying
+        why.  A metric whose calibration raises keeps its raw value and is
+        listed in ``calibration_errors`` (``composite_score_calibrated`` is
+        then False).  A calibrated metric more than ``WARNING_Z`` standard
+        deviations below another real sample is listed, with that deviation,
+        in ``calibration_warnings``: a warning outside the score.
+
+        Returns the calibrated results (the caller's list is not modified)
+        and the calibration entries for the aggregates.
         """
-        Apply calibration normalization to family scores.
-
-        Args:
-            aggregates: Aggregates dictionary with raw family scores
-
-        Returns:
-            Updated aggregates with calibrated scores
-        """
-        calibrated_aggregates = aggregates.copy()
-        calibrated_family_scores = {}
-
-        for family in FAMILIES:
-            score_key = f"{family}_score"
-            if score_key in aggregates:
-                raw_score = aggregates[score_key]
-                if not np.isfinite(raw_score):
-                    continue
-
-                try:
-                    calibrated_score = self.calibration_bounds.normalize_with_bounds(
-                        family, raw_score
+        bounds = self.calibration_bounds
+        calibrated: list[MetricResult] = []
+        values: dict[str, float] = {}
+        excluded: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        warnings: dict[str, float] = {}
+        uncalibrated: list[str] = []
+        deviation = getattr(bounds, "deviation_from_real", lambda _m, _v: None)
+        for r in results:
+            if r.status != "ok" or self._family_of(r) == "utility":
+                calibrated.append(r)
+                continue
+            if r.id not in bounds:
+                uncalibrated.append(r.id)
+                calibrated.append(r)
+                continue
+            is_calibratable = getattr(bounds, "is_calibratable", lambda _m: True)
+            if not is_calibratable(r.id):
+                reason = bounds.exclusion_reason(r.id)
+                excluded[r.id] = reason
+                calibrated.append(
+                    MetricResult.not_applicable(
+                        r.id,
+                        r.family,
+                        f"calibration {reason}",
+                        r.purpose_tags,
+                        calibration=reason,
+                        raw_value=r.value,
                     )
+                )
+                continue
+            try:
+                value = float(bounds.normalize_with_bounds(r.id, r.value))
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(
+                    "Calibration of '%s' failed (%s: %s); keeping raw value %.4f",
+                    r.id,
+                    type(exc).__name__,
+                    exc,
+                    r.value,
+                )
+                errors[r.id] = f"{type(exc).__name__}: {exc}"
+                calibrated.append(r)
+                continue
+            values[r.id] = value
+            z = deviation(r.id, r.value)
+            if z is not None and z >= WARNING_Z:
+                warnings[r.id] = z
+            calibrated.append(
+                MetricResult(
+                    id=r.id,
+                    value=value,
+                    details={**r.details, "calibration": {"raw_value": r.value}},
+                    family=r.family,
+                    purpose_tags=r.purpose_tags,
+                )
+            )
 
-                    calibrated_aggregates[score_key] = calibrated_score
-                    calibrated_aggregates[f"{family}_score_raw"] = raw_score
-                    calibrated_family_scores[family] = calibrated_score
-                except Exception as e:
-                    self.logger.warning("Calibration normalization failed for %s: %s", family, e)
-                    calibrated_aggregates[score_key] = raw_score
-                    calibrated_family_scores[family] = raw_score
-
-        # Recalculate composite score with calibrated values
-        if calibrated_family_scores:
-            family_scores_array = list(calibrated_family_scores.values())
-            composite = self._apply_composite_aggregation(family_scores_array)
-            calibrated_aggregates["composite_score"] = float(composite)
-            calibrated_aggregates["composite_score_calibrated"] = True
-
-        return calibrated_aggregates
+        info: dict[str, Any] = {
+            "calibration_method": "per_metric",
+            "calibrated_metrics": values,
+            "composite_score_calibrated": not errors,
+        }
+        if excluded:
+            info["calibration_excluded"] = excluded
+        if uncalibrated:
+            info["calibration_missing"] = uncalibrated
+        if errors:
+            info["calibration_errors"] = errors
+        if warnings:
+            info["calibration_warnings"] = dict(sorted(warnings.items(), key=lambda kv: -kv[1]))
+        return calibrated, info

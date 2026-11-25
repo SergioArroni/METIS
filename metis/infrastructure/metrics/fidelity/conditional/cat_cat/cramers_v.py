@@ -10,6 +10,7 @@ from scipy.stats import chi2_contingency
 
 from ....registry import register
 from ...fidelity_base import CatCatPairMetric
+from .chi2_stat import bias_corrected_v2
 
 
 @register("fidelity.cramers_v")
@@ -45,8 +46,20 @@ class CramersVMetric(CatCatPairMetric):
 
         Returns:
             Cramér's V value in [0, 1]
+
+        Bias-corrected (Bergsma 2013, ``bias_corrected_v2``): the plug-in V is
+        biased upwards by an amount that grows with the cardinality and shrinks
+        with n, so tables of different sizes (or with gaps in different
+        columns) were compared with different biases.  Falls back to the
+        plug-in V when the correction is undefined (fewer rows than levels).
         """
-        chi2 = chi2_contingency(contingency)[0]
+        corrected = bias_corrected_v2(contingency)
+        if np.isfinite(corrected):
+            return float(np.sqrt(corrected))
+        # Uncorrected chi^2 (the definition of V): scipy applies Yates'
+        # continuity correction to 2x2 tables by default, which shrinks V by an
+        # amount that depends on n.
+        chi2 = chi2_contingency(contingency, correction=False)[0]
         n = contingency.sum()
         min_dim = min(contingency.shape) - 1
         if min_dim == 0 or n == 0:
@@ -72,8 +85,8 @@ class CramersVMetric(CatCatPairMetric):
         Returns:
             tuple of (real_value, synth_value)
         """
-        real_cont = pd.crosstab(real_col1, real_col2).values
-        synth_cont = pd.crosstab(synth_col1, synth_col2).values
+        real_cont = self._contingency("real", real_col1, real_col2)
+        synth_cont = self._contingency("synth", synth_col1, synth_col2)
 
         r_cv = self._cramers_v(real_cont)
         s_cv = self._cramers_v(synth_cont)

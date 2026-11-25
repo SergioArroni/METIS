@@ -1,54 +1,46 @@
-"""SMOTENC synthetic data generator."""
+"""SMOTE-NC synthetic data generator.
+
+The previous version called ``imblearn``'s ``SMOTENC.fit_resample`` with
+``sampling_strategy="auto"``: that *oversamples the minority classes* and
+returns the original rows plus a few interpolated ones, so the "synthetic"
+table was mostly real rows (94 % with a balanced target), the target was
+forced to 50/50 and, in regression, every feature row was a real copy with
+the target re-drawn inside its decile.  It was a bootstrap, not a generator.
+
+This version uses the SMOTE-NC rule (Chawla et al., 2002) as a synthesiser:
+every output row is new.
+
+1. Draw a class with the real class frequencies (classification) — the
+   target marginal is kept; in regression the target is one more continuous
+   column and there are no classes.
+2. Draw a seed row of that class and one of its ``k`` nearest neighbours of
+   the same class (distance on standardised continuous columns plus, for
+   each categorical mismatch, the median of the continuous standard
+   deviations, as in SMOTE-NC).
+3. Continuous columns: ``x_seed + u · (x_neighbour − x_seed)``, ``u ~ U(0, 1)``
+   (integer-valued columns are rounded).  Categorical and ordinal columns: the
+   most frequent value among the ``k`` neighbours (SMOTE-NC's vote).
+"""
 
 import numpy as np
 import pandas as pd
+from sklearn.neighbors import NearestNeighbors
 
 from .base import BaseGenerator
 
-# Optional import for SMOTE and SMOTENC
-try:
-    from imblearn.over_sampling import SMOTE, SMOTENC
-
-    SMOTE_AVAILABLE = True
-except ImportError:
-    SMOTE_AVAILABLE = False
-    SMOTE = None
-    SMOTENC = None
-
-# Optional import for METIS preprocessing (SimpleCaster)
-try:
-    from metis.domain.contracts import TypeSchema
-    from metis.infrastructure.preprocess.caster import SimpleCaster
-
-    METIS_CASTER_AVAILABLE = True
-except ImportError:
-    METIS_CASTER_AVAILABLE = False
-    TypeSchema = None
-    SimpleCaster = None
-
 
 class SMOTENCGenerator(BaseGenerator):
-    """
-    SMOTENC (Synthetic Minority Over-sampling Technique for Nominal and Continuous) generator.
-
-    Generates synthetic samples by interpolating between existing samples,
-    natively handling both categorical and continuous features.
-    Uses the same preprocessing as METIS evaluation (SimpleCaster + dropna):
-    1. Drop rows with NaN (same as METIS orchestrator)
-    2. LabelEncode categoricals for SMOTENC
-    3. For regression targets: bin into quantiles to create pseudo-classes
-    4. Run SMOTENC (falls back to plain SMOTE if no categorical columns)
-    5. Reverse transforms to produce raw output
-    """
+    """SMOTE-NC interpolation as a synthesiser (module docstring)."""
 
     def __init__(
         self,
         name: str = "SMOTENC",
+        *,
         k_neighbors: int = 5,
         random_state: int | None = None,
         target_column: str | None = None,
         task_type: str | None = None,
-        n_quantile_bins: int = 10,
+        n_quantile_bins: int = 10,  # kept for config compatibility; unused
         schema_config: dict | None = None,
         **kwargs,
     ):
@@ -59,10 +51,7 @@ class SMOTENCGenerator(BaseGenerator):
         self.task_type = task_type
         self.n_quantile_bins = n_quantile_bins
         self.schema_config = schema_config
-        self._real_data = None
-        self._target = None
-        self._target_bin_edges = None
-        self._caster = None
+        self._data: pd.DataFrame | None = None
 
     def fit(
         self,
@@ -71,184 +60,124 @@ class SMOTENCGenerator(BaseGenerator):
         ordinal_columns: dict[str, list] | None = None,
         continuous_columns: list[str] | None = None,
     ) -> None:
-        """Fit SMOTENC to real data with METIS-consistent preprocessing."""
-        if not SMOTE_AVAILABLE:
-            raise ImportError(
-                "imbalanced-learn is required for SMOTENCGenerator. "
-                "Install with: pip install imbalanced-learn>=0.12.0"
-            )
-
+        """Store the complete rows and split continuous from categorical columns."""
         if not self.target_column:
             raise ValueError(
                 "target_column is required for SMOTENC. Specify target_column in generator params."
             )
-
         if self.target_column not in real_data.columns:
             raise ValueError(
                 f"Target column '{self.target_column}' not found in data. "
                 f"Available columns: {list(real_data.columns)}"
             )
+        # Interpolation needs complete rows (as SMOTE-NC itself).
+        data = real_data.dropna().reset_index(drop=True)
+        if len(data) < 2:
+            raise ValueError("SMOTENC needs at least two complete rows")
 
-        # Step 1: Drop NaN rows (same as METIS orchestrator)
-        n_before = len(real_data)
-        clean_data = real_data.dropna().reset_index(drop=True)
-        n_dropped = n_before - len(clean_data)
-        if n_dropped > 0:
-            print(
-                f"  SMOTENC: dropped {n_dropped} rows with NaN ({n_dropped / n_before * 100:.1f}%)"
-            )
-
-        # Separate features and target
-        self._target = clean_data[self.target_column].copy()
-        self._real_data = clean_data.drop(columns=[self.target_column]).copy()
-
-        self._categorical_columns = categorical_columns or []
-        self._ordinal_columns = ordinal_columns or {}
-        self._continuous_columns = continuous_columns or []
-
-        # Auto-detect task type if not specified
-        if self.task_type is None:
-            n_unique = self._target.nunique()
-            if n_unique <= 20 or self._target.dtype == object:
-                self.task_type = "classification"
+        cat = set(categorical_columns or []) | set((ordinal_columns or {}).keys())
+        self._continuous = []
+        self._categorical = []
+        for col in data.columns:
+            if col in cat:
+                self._categorical.append(col)
+                continue
+            converted = pd.to_numeric(data[col], errors="coerce")
+            if converted.notna().all() and col not in cat:
+                data[col] = converted
+                self._continuous.append(col)
             else:
-                self.task_type = "regression"
+                self._categorical.append(col)
 
+        if self.task_type is None:
+            y = data[self.target_column]
+            self.task_type = (
+                "classification"
+                if self.target_column in self._categorical or y.nunique() <= 20
+                else "regression"
+            )
+        if self.task_type == "classification" and self.target_column in self._continuous:
+            # Classes are never interpolated.
+            self._continuous.remove(self.target_column)
+            self._categorical.append(self.target_column)
+
+        self._integer = {
+            c
+            for c in self._continuous
+            if np.allclose(data[c] % 1, 0) and data[c].dtype.kind in "if"
+        }
+        self._data = data
         self._is_fitted = True
 
-    def _preprocess(self, X: pd.DataFrame, y: pd.Series) -> tuple:
-        """
-        Preprocess data for SMOTENC.
-
-        Returns:
-            tuple of (X_clean, y_clean, cat_indices, label_encoders)
-        """
-        from sklearn.preprocessing import LabelEncoder
-
-        X_clean = X.copy()
-        y_clean = y.copy()
-
-        categorical_cols = set(self._categorical_columns) | set(self._ordinal_columns.keys())
-
-        # Fix mistyped columns: numeric columns stored as strings
-        for col in X_clean.columns:
-            if col not in categorical_cols and X_clean[col].dtype == object:
-                X_clean[col] = X_clean[col].replace(r"^\s*$", np.nan, regex=True)
-                converted = pd.to_numeric(X_clean[col], errors="coerce")
-                if converted.notna().any():
-                    X_clean[col] = converted
-                else:
-                    categorical_cols.add(col)
-
-        # Drop any rows that became NaN after type conversion
-        mask = X_clean.notna().all(axis=1) & y_clean.notna()
-        n_before = len(X_clean)
-        X_clean = X_clean[mask].reset_index(drop=True)
-        y_clean = y_clean[mask].reset_index(drop=True)
-        n_dropped = n_before - len(X_clean)
-        if n_dropped > 0:
-            print(f"  SMOTENC: dropped {n_dropped} additional rows after type coercion")
-
-        # LabelEncode categoricals for SMOTENC
-        label_encoders = {}
-        for col in X_clean.columns:
-            if col in categorical_cols:
-                le = LabelEncoder()
-                X_clean[col] = le.fit_transform(X_clean[col].astype(str))
-                label_encoders[col] = le
-
-        # Categorical feature indices for SMOTENC
-        cat_indices = [i for i, col in enumerate(X_clean.columns) if col in categorical_cols]
-
-        return X_clean, y_clean, cat_indices, label_encoders
-
-    def _bin_regression_target(self, y: pd.Series) -> pd.Series:
-        """Bin a continuous target into quantile-based classes for SMOTENC."""
-        try:
-            y_binned, bin_edges = pd.qcut(
-                y, q=self.n_quantile_bins, labels=False, retbins=True, duplicates="drop"
-            )
-        except ValueError:
-            y_binned, bin_edges = pd.cut(
-                y,
-                bins=min(self.n_quantile_bins, y.nunique()),
-                labels=False,
-                retbins=True,
-            )
-        self._target_bin_edges = bin_edges
-        return y_binned.astype(int)
-
-    def _unbin_regression_target(
-        self, y_binned: pd.Series, rng: np.random.RandomState
-    ) -> pd.Series:
-        """Reconstruct continuous values from binned classes."""
-        edges = self._target_bin_edges
-        y_continuous = np.empty(len(y_binned))
-        for i in range(len(y_binned)):
-            bin_idx = int(y_binned.iloc[i])
-            bin_idx = min(bin_idx, len(edges) - 2)
-            low, high = edges[bin_idx], edges[bin_idx + 1]
-            y_continuous[i] = rng.uniform(low, high)
-        return pd.Series(y_continuous, index=y_binned.index)
-
-    def _decode_categoricals(self, df: pd.DataFrame, label_encoders: dict) -> pd.DataFrame:
-        """Reverse label encoding for categorical columns."""
-        result = df.copy()
-        for col, le in label_encoders.items():
-            if col in result.columns:
-                vals = result[col].round().astype(int).clip(0, len(le.classes_) - 1)
-                result[col] = le.inverse_transform(vals)
-        return result
+    # ------------------------------------------------------------------
+    def _space(self, frame: pd.DataFrame) -> np.ndarray:
+        """Mixed distance space: z-scored continuous + scaled one-hot categorical."""
+        blocks = []
+        stds = []
+        for c in self._continuous:
+            v = frame[c].to_numpy(float)
+            sd = v.std() or 1.0
+            stds.append(sd)
+            blocks.append(((v - v.mean()) / sd)[:, None])
+        # SMOTE-NC: a categorical mismatch costs the median continuous std
+        # (1 after z-scoring, so the penalty is 1 when there are continuous columns).
+        penalty = 1.0
+        for c in self._categorical:
+            if c == self.target_column and self.task_type == "classification":
+                continue
+            codes = pd.get_dummies(frame[c].astype(str)).to_numpy(float)
+            blocks.append(codes * penalty / np.sqrt(2.0))
+        if not blocks:
+            return np.zeros((len(frame), 1))
+        return np.hstack(blocks)
 
     def generate(self, n_samples: int) -> pd.DataFrame:
-        """Generate synthetic data using SMOTENC interpolation."""
+        """Generate ``n_samples`` new rows by SMOTE-NC interpolation."""
         if not self._is_fitted:
             raise RuntimeError(f"{self.name} must be fitted before generating data")
+        rng = np.random.default_rng(self.random_state)
+        data = self._data
+        space = self._space(data)
 
-        rng = np.random.RandomState(self.random_state)
-        X = self._real_data.copy()
-        y = self._target.copy()
-
-        X_clean, y_clean, cat_indices, label_encoders = self._preprocess(X, y)
-
-        if self.task_type == "regression":
-            y_for_smote = self._bin_regression_target(y_clean)
+        if self.task_type == "classification":
+            labels = data[self.target_column].astype(str).to_numpy()
+            classes, counts = np.unique(labels, return_counts=True)
+            groups = [np.flatnonzero(labels == c) for c in classes]
+            drawn = rng.choice(len(classes), size=n_samples, p=counts / counts.sum())
         else:
-            y_for_smote = y_clean.copy()
+            groups = [np.arange(len(data))]
+            drawn = np.zeros(n_samples, dtype=int)
 
-        y_for_smote = y_for_smote.astype(str)
+        rows = []
+        for g, members in enumerate(groups):
+            want = int(np.sum(drawn == g))
+            if want == 0:
+                continue
+            block = data.iloc[members].reset_index(drop=True)
+            if len(members) == 1:
+                # A class with one row: nothing to interpolate with.
+                rows.append(block.iloc[np.zeros(want, dtype=int)])
+                continue
+            k = min(self.k_neighbors, len(members) - 1)
+            nn = NearestNeighbors(n_neighbors=k + 1).fit(space[members])
+            neighbours = nn.kneighbors(space[members], return_distance=False)[:, 1:]
+            seeds = rng.integers(len(members), size=want)
+            mates = neighbours[seeds, rng.integers(k, size=want)]
+            out = pd.DataFrame(index=range(want))
+            u = rng.random(want)
+            for c in self._continuous:
+                a = block[c].to_numpy(float)[seeds]
+                b = block[c].to_numpy(float)[mates]
+                v = a + u * (b - a)
+                out[c] = np.round(v) if c in self._integer else v
+            for c in self._categorical:
+                values = block[c].to_numpy()
+                votes = values[neighbours[seeds]]  # k neighbours of each seed
+                out[c] = [pd.Series(v).mode().iloc[0] for v in votes]
+            if self.task_type == "classification":
+                out[self.target_column] = block[self.target_column].iloc[0]
+            rows.append(out)
 
-        class_counts = y_for_smote.value_counts()
-        min_count = class_counts.min()
-        k = min(self.k_neighbors, min_count - 1) if min_count > 1 else 1
-
-        if cat_indices:
-            smote = SMOTENC(
-                categorical_features=cat_indices,
-                sampling_strategy="auto",
-                k_neighbors=k,
-                random_state=self.random_state,
-            )
-        else:
-            smote = SMOTE(
-                sampling_strategy="auto",
-                k_neighbors=k,
-                random_state=self.random_state,
-            )
-
-        X_resampled, y_resampled = smote.fit_resample(X_clean, y_for_smote)
-
-        synthetic = pd.DataFrame(X_resampled, columns=X.columns)
-
-        if self.task_type == "regression":
-            y_series = pd.Series(y_resampled, name=self.target_column).astype(int)
-            synthetic[self.target_column] = self._unbin_regression_target(y_series, rng)
-        else:
-            synthetic[self.target_column] = y_resampled
-
-        synthetic = self._decode_categoricals(synthetic, label_encoders)
-
-        replace = len(synthetic) < n_samples
-        return synthetic.sample(
-            n=n_samples, replace=replace, random_state=self.random_state
-        ).reset_index(drop=True)
+        synthetic = pd.concat(rows, ignore_index=True)[list(data.columns)]
+        order = rng.permutation(len(synthetic))
+        return synthetic.iloc[order].reset_index(drop=True)

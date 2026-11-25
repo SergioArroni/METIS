@@ -116,7 +116,6 @@ class GeneratorRegistry:
 
 def _register_defaults() -> None:
     """Populate the registry with all built-in generators."""
-    from .adsgan import ADSGANGenerator
     from .bayesian_network import BayesianNetworkGenerator
     from .bootstrap import RandomSamplingGenerator
     from .cart import CARTGenerator
@@ -143,7 +142,6 @@ def _register_defaults() -> None:
     GeneratorRegistry.register("bayesian_network", BayesianNetworkGenerator)
     GeneratorRegistry.register("cart", CARTGenerator)
     GeneratorRegistry.register("ctgan", CTGANGenerator)
-    GeneratorRegistry.register("adsgan", ADSGANGenerator)
     GeneratorRegistry.register("tvae", TVAEGenerator)
     GeneratorRegistry.register("dpctgan", DPCTGANGenerator)
 

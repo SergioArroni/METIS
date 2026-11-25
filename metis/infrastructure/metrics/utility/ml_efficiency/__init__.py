@@ -8,8 +8,10 @@ This module evaluates synthetic data quality through 5 training/testing strategi
 - TSTR: Train on Synthetic, Test on Real (practical utility)
 - TTRS: Train on Real+Synthetic cocktail, Test on Real (augmentation utility)
 
-Each strategy is compared against TTR baseline using absolute difference.
-Final score = 1 - mean(|metric - TTR|) normalized to [0, 1].
+Each strategy is scored on an absolute scale between a model without signal
+(0) and TTR (1), clipped (matching or beating TTR scores 1):
+``utility.ml_efficiency`` averages it over the selected strategies (TSTR by
+default).  See ``ml_efficiency_metric`` for the protocol.
 """
 
 from .base import BaseStrategyMetric, MLEfficiencyResult, StrategyResult, TrainingStrategy

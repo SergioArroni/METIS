@@ -1,4 +1,13 @@
-"""Real data (split-half) upper bound baseline generator."""
+"""Real data baseline: real rows the generator pipeline never saw.
+
+The benchmark splits the real table per seed into train / holdout / unseen
+(``comparison.orchestrator.split_real``).  ``real_data`` returns rows of the
+*unseen* part: it is what a perfect generator that never memorised anything
+would produce, so it is the reference of the best case in fidelity, utility
+**and** privacy.  It used to split the whole table in two halves and be
+evaluated as n/2 vs n/2 while every other generator was n vs n; and the
+paper used it as the *lower* bound of privacy, which an unseen sample is not.
+"""
 
 import numpy as np
 import pandas as pd
@@ -7,18 +16,7 @@ from .base import BaseGenerator
 
 
 class RealDataGenerator(BaseGenerator):
-    """
-    Real data generator - upper bound baseline using split-half.
-
-    Mirrors the calibration upper-bound strategy: splits the real dataset
-    into two disjoint halves (without replacement) and uses one half as the
-    "real" reference and the other as the "synthetic" output.  This ensures
-    the benchmark upper bound is consistent with the calibration upper bound.
-
-    The ``real_reference`` property exposes the "real" half so the benchmark
-    orchestrator can use it instead of the full dataset when evaluating this
-    generator.
-    """
+    """Returns rows of the unseen real part (module docstring)."""
 
     def __init__(
         self,
@@ -28,14 +26,11 @@ class RealDataGenerator(BaseGenerator):
     ):
         super().__init__(name=name, **kwargs)
         self.random_state = random_state
-        self._real_data = None
-        self._real_half: pd.DataFrame | None = None
-        self._synth_half: pd.DataFrame | None = None
+        self._unseen: pd.DataFrame | None = None
 
-    @property
-    def real_reference(self) -> pd.DataFrame | None:
-        """Return the 'real' half to be used as reference during evaluation."""
-        return self._real_half
+    def set_unseen(self, unseen: pd.DataFrame) -> None:
+        """Real rows outside the training part and the holdout."""
+        self._unseen = unseen.reset_index(drop=True)
 
     def fit(
         self,
@@ -44,30 +39,19 @@ class RealDataGenerator(BaseGenerator):
         ordinal_columns: dict[str, list] | None = None,
         continuous_columns: list[str] | None = None,
     ) -> None:
-        """Store real data."""
-        self._real_data = real_data.copy()
+        """Nothing to learn; without ``set_unseen`` it refuses to copy *real_data*."""
+        if self._unseen is None:
+            raise ValueError(
+                "real_data needs real rows the evaluation never sees: call set_unseen() "
+                "(the benchmark orchestrator does); returning the training rows would be a copy"
+            )
         self._is_fitted = True
 
     def generate(self, n_samples: int) -> pd.DataFrame:
-        """
-        Generate data using split-half (consistent with calibration upper bound).
-
-        Shuffles the real data with the current seed and splits it into two
-        disjoint halves.  Returns one half as "synthetic" data and stores
-        the other in ``real_reference`` for use as the evaluation baseline.
-        """
+        """``n_samples`` unseen real rows, without replacement when there are enough."""
         if not self._is_fitted:
             raise RuntimeError(f"{self.name} must be fitted before generating data")
-
-        rng = np.random.RandomState(self.random_state)
-        n = len(self._real_data)
-        indices = rng.permutation(n)
-        half = n // 2
-
-        idx_a = indices[:half]
-        idx_b = indices[half : half + half]
-
-        self._real_half = self._real_data.iloc[idx_a].reset_index(drop=True)
-        self._synth_half = self._real_data.iloc[idx_b].reset_index(drop=True)
-
-        return self._synth_half.copy()
+        rng = np.random.default_rng(self.random_state)
+        n = len(self._unseen)
+        idx = rng.choice(n, size=n_samples, replace=n_samples > n)
+        return self._unseen.iloc[idx].reset_index(drop=True)

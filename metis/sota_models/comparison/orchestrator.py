@@ -13,6 +13,7 @@ import copy
 import gc
 import json
 import logging
+import math
 import tempfile
 import traceback
 from datetime import datetime
@@ -34,10 +35,96 @@ from metis.domain.entities import DatasetSpec
 from metis.infrastructure.io.loaders import load_csv
 from metis.shared.config_utils import none_safe as _none_safe
 from metis.shared.schema_utils import extract_column_types
+from metis.shared.splits import DEFAULT_SPLIT, split_fractions, split_real  # noqa: F401  (re-exported)
 from metis.sota_models.generators.base import BaseGenerator
 from metis.sota_models.generators.registry import GeneratorRegistry
 
 logger = logging.getLogger(__name__)
+
+# A family score that is missing (e.g. utility without ``data.target``) is NaN:
+# reporting it as 0.0 ranked the generator last on that family.
+_NAN = float("nan")
+
+
+def _nan_to_none(obj: Any) -> Any:
+    if isinstance(obj, float) and math.isnan(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: _nan_to_none(v) for k, v in obj.items()}
+    if isinstance(obj, list | tuple):
+        return [_nan_to_none(v) for v in obj]
+    return obj
+
+
+# Default split of the real table per seed (train / holdout / unseen, 60/20/20)
+# and the split itself are shared with the calibration (metis.shared.splits).
+
+
+def _separator(data_cfg: dict[str, Any], prefix: str) -> str:
+    for key in (f"{prefix}_separator", "separator"):
+        sep = _none_safe(data_cfg.get(key))
+        if sep is not None:
+            return sep
+    return ","
+
+
+class GeneratorTrainingView:
+    """The real table as generators are trained on it, and back.
+
+    Starts from the real table cleaned but not cast and keeps every column
+    under its declared type (the four of Phase −1): nominal columns as
+    canonical strings, ordinal columns as their raw labels with the schema's
+    levels, continuous and discrete ones as floats.  Dates (``continuous``
+    with ``datetime: true``) are trained as seconds since the epoch
+    (generators cannot model timestamps) and :meth:`restore` turns them back
+    into datetimes, so the synthetic table is evaluated with the original schema.
+    """
+
+    def __init__(self, real_clean: pd.DataFrame, schema_cfg: dict[str, Any]) -> None:
+        from metis.infrastructure.preprocess.caster import SimpleCaster
+
+        self._datetime: list[str] = []
+        categorical: list[str] = []
+        ordinal: dict[str, list] = {}
+        continuous: list[str] = []
+        train = pd.DataFrame(index=real_clean.index)
+        for col, spec in schema_cfg.items():
+            typ = spec if isinstance(spec, str) else spec.get("type", "")
+            if typ == "id" or col not in real_clean.columns:
+                continue
+            s = real_clean[col]
+            if typ == "continuous" and isinstance(spec, dict) and spec.get("datetime"):
+                ts = pd.to_datetime(s, errors="coerce")
+                train[col] = (ts - pd.Timestamp("1970-01-01")).dt.total_seconds()
+                self._datetime.append(col)
+                continuous.append(col)
+            elif typ == "ordinal":
+                train[col] = s.map(SimpleCaster._canonical_str)
+                ordinal[col] = [SimpleCaster._canonical_str(v) for v in spec.get("levels", [])]
+            elif typ == "nominal":
+                train[col] = s.map(SimpleCaster._canonical_str)
+                categorical.append(col)
+            else:  # continuous, discrete
+                train[col] = pd.to_numeric(s, errors="coerce").astype(float)
+                continuous.append(col)
+        self.train_data = train.reset_index(drop=True)
+        self.column_types: dict[str, Any] = {
+            "categorical": categorical,
+            "ordinal": ordinal,
+            "continuous": continuous,
+            "id": [],
+        }
+
+    def restore(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Synthetic (or real-half) table in the real table's representation."""
+        cols = [c for c in self.train_data.columns if c in df.columns]
+        out = df[cols].copy()
+        for col in self._datetime:
+            if col in out.columns:
+                out[col] = pd.to_datetime(
+                    pd.to_numeric(out[col], errors="coerce"), unit="s", errors="coerce"
+                )
+        return out
 
 
 class BenchmarkOrchestrator:
@@ -122,8 +209,10 @@ class BenchmarkOrchestrator:
         return {
             # Data (derived from data section)
             "real_data_path": data.get("real", ""),
-            "real_data_separator": data.get("real_separator", ","),
-            "synthetic_data_separator": data.get("synth_separator", ","),
+            # Same order as the evaluation loader: <prefix>_separator ->
+            # separator -> ","; the global ``separator`` was ignored here.
+            "real_data_separator": _separator(data, "real"),
+            "synthetic_data_separator": _separator(data, "synth"),
             "target_column": data.get("target"),
             # Benchmark-specific
             "generators": bench["generators"],
@@ -131,6 +220,10 @@ class BenchmarkOrchestrator:
             "sample_ratio": bench.get("sample_ratio", 1.0),
             "seed": repro.get("seed", 42),
             "n_runs": bench.get("n_runs", 3),
+            "split": split_fractions(cfg, "benchmark"),
+            # Synthetic tables are kept by default: without them the tables of
+            # the paper cannot be rebuilt without retraining every generator.
+            "persist_artifacts": bench.get("persist_artifacts", True),
             # The template is the unified file itself
             "metis_config_template": self.benchmark_config_path,
             # Statistical test (optional)
@@ -215,54 +308,34 @@ class BenchmarkOrchestrator:
             print(f"Filtered to schema columns: {len(available_cols)} columns")
 
         # -----------------------------------------------------------
-        # METIS preprocessing: transform raw data → clean cat/num
-        # This ensures generators receive data with only categorical
-        # (string) and continuous (float) columns, matching what METIS
-        # metrics actually evaluate.  Fixes generators like SMOTE that
-        # cannot handle raw text / datetime / geospatial dtypes.
+        # METIS preprocessing of the real table: IDs stripped and rows with
+        # NaN dropped, but *not* cast.  Generators are trained on this table
+        # with the declared types, and their output is evaluated with the
+        # original schema, exactly like any synthetic table handed to METIS.
+        #
+        # Before, generators were trained on the cast table (``real_tf.full``)
+        # with every column re-declared as categorical/continuous: an ordinal
+        # ``X`` and its rank ``X__ord`` were learnt as two independent
+        # columns, datetimes as bare seconds, and the evaluation then ran on
+        # a synthetic schema instead of the user's.
         # -----------------------------------------------------------
-        # NOTE: SMOTENC natively handles categorical features, but still
-        # needs clean data without mixed/object dtypes.
         preprocessor = DataPreprocessor()
-        eval_config_for_preprocess = copy.deepcopy(metis_config_template)
-        data_cfg = eval_config_for_preprocess.get("data", {})
+        eval_config = copy.deepcopy(metis_config_template)
+        data_cfg = eval_config.get("data", {})
         preprocess_spec = DatasetSpec(
             target=_none_safe(data_cfg.get("target")),
             task_type=_none_safe(data_cfg.get("task_type")),
         )
-        real_tf, _ = preprocessor.preprocess(
-            real_data_raw,
-            real_data_raw.copy(),
-            eval_config_for_preprocess,
-            preprocess_spec,
-        )
-        real_data = real_tf.full  # clean DataFrame: cat (str) + num (float)
-
-        # Build clean column types from the preprocessed columns
-        clean_cat_cols = list(real_tf.cat.columns)
-        clean_num_cols = list(real_tf.num.columns)
-        column_types = {
-            "categorical": clean_cat_cols,
-            "ordinal": {},
-            "continuous": clean_num_cols,
-            "id": [],
-        }
-
-        # Build clean schema for evaluation: every column is now either
-        # "categorical" or "continuous" — no text/datetime/geospatial.
-        clean_schema: dict[str, str] = {}
-        for col in clean_cat_cols:
-            clean_schema[col] = "categorical"
-        for col in clean_num_cols:
-            clean_schema[col] = "continuous"
-
-        # Build eval config with the clean schema
-        eval_config = copy.deepcopy(metis_config_template)
-        eval_config["data"]["schema"] = clean_schema
+        reference = preprocessor.prepare_reference(real_data_raw, eval_config, preprocess_spec)
+        real_data = reference.real_clean
+        train_view = GeneratorTrainingView(real_data, reference.schema_cfg)
+        train_data = train_view.train_data
+        column_types = train_view.column_types
 
         print(
             f"Preprocessed: {len(real_data)} rows, "
-            f"{len(clean_cat_cols)} cat + {len(clean_num_cols)} num columns"
+            f"{len(column_types['categorical'])} cat + {len(column_types['ordinal'])} ord + "
+            f"{len(column_types['continuous'])} num columns"
         )
 
         # -----------------------------------------------------------
@@ -279,6 +352,8 @@ class BenchmarkOrchestrator:
             n_cal_iterations = cal_cfg.get("n_iterations", 10)
             cal_sample_pct = cal_cfg.get("sample_percentage", 100.0)
             cal_sample_size = int(len(real_data) * cal_sample_pct / 100.0)
+            # ``real_data`` is the cleaned, uncast table: the same one the
+            # evaluation pipeline calibrates on (``ReferenceContext.real_clean``).
 
             data_section = self._raw_config.get("data", {})
             dataset_name = Path(data_section.get("real", "")).stem or None
@@ -323,16 +398,16 @@ class BenchmarkOrchestrator:
         # -----------------------------------------------------------
         # Temporary directory for persisting synthetic CSVs.
         # Layout / privacy policy:
-        #   - persist_artifacts == False (default): synthetic CSVs go to an
+        #   - persist_artifacts == False: synthetic CSVs go to an
         #     ephemeral tempdir cleaned up at the end of the run; real-data
-        #     reference halves are NEVER written to disk.
-        #   - persist_artifacts == True: synthetic CSVs are persisted under
+        #     parts are NEVER written to disk.
+        #   - persist_artifacts == True (default): synthetic CSVs are persisted under
         #     ``<output_dir>/synthetic_artifacts/`` (a path the user already
         #     controls). Real-data references remain ephemeral regardless.
         # -----------------------------------------------------------
         _dataset_stem = Path(self.benchmark_config.get("real_data_path", "unknown")).stem
         _timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        persist_artifacts = bool(self.benchmark_config.get("persist_artifacts", False))
+        persist_artifacts = bool(self.benchmark_config.get("persist_artifacts", True))
 
         if persist_artifacts:
             synth_tmp_dir = (
@@ -373,6 +448,19 @@ class BenchmarkOrchestrator:
             for seed in seeds:
                 print(f"\nSeed: {seed}")
 
+                # Same split for every generator of a seed: each one is
+                # trained on ``train_part`` and evaluated against it with the
+                # same holdout and the same synthetic size (``real_data`` was
+                # evaluated with half the rows of the others).
+                task_type = _none_safe(metis_config_template.get("data", {}).get("task_type"))
+                target = self.benchmark_config.get("target_column")
+                train_part, holdout_part, unseen_part = split_real(
+                    train_data,
+                    seed,
+                    self.benchmark_config.get("split", DEFAULT_SPLIT),
+                    stratify_by=target if str(task_type or "").lower() != "regression" else None,
+                )
+
                 try:
                     # Add target_column and task_type to params if generator needs it (e.g., SMOTENC)
                     if gen_name == "smotenc" and "target_column" not in gen_params:
@@ -393,64 +481,51 @@ class BenchmarkOrchestrator:
                         gen_name, random_state=seed, **gen_params_with_target
                     )
 
-                    # Fit generator to real data
-                    print(f"Fitting {generator.name} on {len(real_data)} samples...")
+                    # ``real_data`` returns rows nobody saw; it is not trained.
+                    if hasattr(generator, "set_unseen"):
+                        generator.set_unseen(unseen_part)
+
+                    # Fit generator to the training part only
+                    print(f"Fitting {generator.name} on {len(train_part)} samples...")
                     generator.fit(
-                        real_data=real_data,
+                        real_data=train_part,
                         categorical_columns=column_types["categorical"],
                         ordinal_columns=column_types["ordinal"],
                         continuous_columns=column_types["continuous"],
                     )
 
-                    # Generate synthetic samples
-                    # sample_ratio is a proportion of the preprocessed dataset size
-                    # (default 1.0 = 100%).  This avoids hard-coding an absolute
-                    # count that could mismatch after preprocessing drops rows.
+                    # Generate synthetic samples: as many as the unseen part
+                    # (times sample_ratio, default 1.0).  ``real_data`` returns
+                    # the unseen rows, so every generator and the reference are
+                    # evaluated at the same size, and METIS compares real and
+                    # synthetic at the size of the smaller (``equal_sizes``).
                     sample_ratio = self.benchmark_config.get("sample_ratio", 1.0)
-                    n_samples_to_generate = max(1, int(len(real_data) * sample_ratio))
+                    n_samples_to_generate = max(1, int(len(unseen_part) * sample_ratio))
                     print(
                         f"Generating {n_samples_to_generate} synthetic samples "
-                        f"({sample_ratio:.0%} of {len(real_data)})..."
+                        f"({sample_ratio:.0%} of the {len(unseen_part)} unseen rows)..."
                     )
                     synthetic_data = generator.generate(n_samples=n_samples_to_generate)
 
-                    # Filter to only include clean schema columns
-                    clean_cols = list(clean_schema.keys())
-                    available_synth = [col for col in clean_cols if col in synthetic_data.columns]
-                    synthetic_data = synthetic_data[available_synth]
+                    # Back to the representation of the real table
+                    # (datetimes from seconds), schema columns only.
+                    synthetic_data = train_view.restore(synthetic_data)
 
                     # Persist synthetic data to tmp directory
                     synth_csv_path = synth_tmp_dir / f"{gen_name}_seed{seed}.csv"
                     synthetic_data.to_csv(synth_csv_path, index=False)
                     print(f"Saved synthetic data → {synth_csv_path}")
 
-                    # If the generator provides a custom real reference
-                    # (e.g. RealDataGenerator uses split-half to be consistent
-                    # with the calibration upper bound), use it instead of the
-                    # full dataset.
-                    eval_real = real_data
-                    real_ref = getattr(generator, "real_reference", None)
-                    if real_ref is not None:
-                        available_real_ref = [col for col in clean_cols if col in real_ref.columns]
-                        eval_real = real_ref[available_real_ref]
-                        print(
-                            f"Using generator's split-half real reference "
-                            f"({len(eval_real)} rows) for evaluation"
-                        )
-                        # SECURITY: real-data half is PII-bearing for some
-                        # datasets (e.g. cardio, RRHH). It is intentionally
-                        # NOT written to disk; metrics consume it in-memory.
+                    # Every generator: the part it was trained on as the real
+                    # table, and the holdout as never-seen reference.  The
+                    # real parts are kept in memory only (PII).
+                    eval_real = train_view.restore(train_part)
+                    eval_holdout = train_view.restore(holdout_part)
 
                     # Build per-run config
                     run_config = copy.deepcopy(eval_config)
                     run_config["report"] = {
                         "output_dir": str(output_dir / f"{gen_name}_seed{seed}"),
-                    }
-                    if "evaluation" not in run_config:
-                        run_config["evaluation"] = {}
-                    run_config["evaluation"]["dataset_sizes"] = {
-                        "n_synthetic": len(synthetic_data),
-                        "n_real": len(eval_real),
                     }
 
                     # Point at the pre-computed calibration file so that
@@ -470,10 +545,15 @@ class BenchmarkOrchestrator:
                         config=run_config,
                         seed=seed,
                         config_path=metis_config_path,
+                        holdout=eval_holdout,
                     )
 
                     gen_results[seed] = {
                         "run_summary": run_summary,
+                        "synthetic_path": str(synth_csv_path),
+                        "n_train": len(train_part),
+                        "n_holdout": len(holdout_part),
+                        "privacy_accounting": getattr(generator, "privacy_accounting", None),
                     }
 
                     print(f"Completed {gen_name} with seed {seed}")
@@ -554,10 +634,10 @@ class BenchmarkOrchestrator:
                     run_summary = seed_results["run_summary"]
                     agg = run_summary.aggregates
                     scores = {
-                        "fidelity": agg.get("fidelity_score", 0.0),
-                        "utility": agg.get("utility_score", 0.0),
-                        "privacy": agg.get("privacy_score", 0.0),
-                        "overall": agg.get("composite_score", 0.0),
+                        "fidelity": agg.get("fidelity_score", _NAN),
+                        "utility": agg.get("utility_score", _NAN),
+                        "privacy": agg.get("privacy_score", _NAN),
+                        "overall": agg.get("composite_score", _NAN),
                     }
                     # Include raw (pre-calibration) scores when available
                     if agg.get("composite_score_calibrated"):
@@ -568,6 +648,7 @@ class BenchmarkOrchestrator:
                     else:
                         scores["calibrated"] = False
 
+                    artifacts = run_summary.artifacts
                     serializable_results[gen_name][seed] = {
                         "aggregated_scores": scores,
                         "metrics": [
@@ -575,14 +656,24 @@ class BenchmarkOrchestrator:
                                 "metric_id": m.id,
                                 "value": m.value,
                                 "family": m.family,
+                                "status": getattr(m, "status", None),
                                 "details": self._serializable_details(m.details),
                             }
                             for m in run_summary.results
                         ],
+                        "synthetic_path": seed_results.get("synthetic_path"),
+                        "n_train": seed_results.get("n_train"),
+                        "n_holdout": seed_results.get("n_holdout"),
+                        "privacy_accounting": seed_results.get("privacy_accounting"),
+                        "synth_rows_dropped_fraction": artifacts.get("synth_rows_dropped_fraction"),
+                        "warnings": list(artifacts.get("warnings", [])),
+                        "metis_version": artifacts.get("metis_version"),
+                        "metis_commit": artifacts.get("metis_commit"),
                     }
 
         with output_path.open("w", encoding="utf-8") as f:
-            json.dump(serializable_results, f, indent=2)
+            # NaN is not JSON: a missing family is written as ``null``.
+            json.dump(_nan_to_none(serializable_results), f, indent=2)
 
     @staticmethod
     def _serializable_details(details: dict | None) -> dict | None:
@@ -638,20 +729,31 @@ class BenchmarkOrchestrator:
             for _seed, seed_results in gen_results.items():
                 if "error" not in seed_results:
                     aggregates = seed_results["run_summary"].aggregates
-                    fidelity_scores.append(aggregates.get("fidelity_score", 0.0))
-                    utility_scores.append(aggregates.get("utility_score", 0.0))
-                    privacy_scores.append(aggregates.get("privacy_score", 0.0))
-                    overall_scores.append(aggregates.get("composite_score", 0.0))
+                    fidelity_scores.append(aggregates.get("fidelity_score", _NAN))
+                    utility_scores.append(aggregates.get("utility_score", _NAN))
+                    privacy_scores.append(aggregates.get("privacy_score", _NAN))
+                    overall_scores.append(aggregates.get("composite_score", _NAN))
 
                     if aggregates.get("composite_score_calibrated"):
                         has_calibrated = True
-                        fidelity_raw_scores.append(aggregates.get("fidelity_score_raw", 0.0))
-                        utility_raw_scores.append(aggregates.get("utility_score_raw", 0.0))
-                        privacy_raw_scores.append(aggregates.get("privacy_score_raw", 0.0))
+                        fidelity_raw_scores.append(aggregates.get("fidelity_score_raw", _NAN))
+                        utility_raw_scores.append(aggregates.get("utility_score_raw", _NAN))
+                        privacy_raw_scores.append(aggregates.get("privacy_score_raw", _NAN))
 
+            n_failed = sum(1 for r in gen_results.values() if "error" in r)
+            if n_failed:
+                logger.warning(
+                    "%s: %d of %d seed(s) failed and are not in its means",
+                    gen_name,
+                    n_failed,
+                    len(gen_results),
+                )
             if fidelity_scores:
                 row = {
                     "generator": gen_name,
+                    # Seeds behind the means: a failed seed used to vanish silently.
+                    "n_seeds_ok": len(fidelity_scores),
+                    "n_seeds_failed": n_failed,
                     "fidelity_mean": pd.Series(fidelity_scores).mean(),
                     "fidelity_std": pd.Series(fidelity_scores).std(),
                     "utility_mean": pd.Series(utility_scores).mean(),
@@ -667,5 +769,7 @@ class BenchmarkOrchestrator:
                     row["privacy_raw_mean"] = pd.Series(privacy_raw_scores).mean()
                     row["calibrated"] = True
                 rows.append(row)
+            else:
+                rows.append({"generator": gen_name, "n_seeds_ok": 0, "n_seeds_failed": n_failed})
 
         return pd.DataFrame(rows)

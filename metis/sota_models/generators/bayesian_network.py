@@ -9,7 +9,8 @@ from .base import BaseGenerator
 
 # Optional imports
 try:
-    from pgmpy.estimators import BayesianEstimator, HillClimbSearch
+    from pgmpy.causal_discovery import HillClimbSearch
+    from pgmpy.estimators import BayesianEstimator
 
     try:
         from pgmpy.models import DiscreteBayesianNetwork as PgmpyBayesianNetwork
@@ -21,6 +22,51 @@ try:
 except ImportError:
     PGMPY_AVAILABLE = False
     PgmpyBayesianNetwork = None
+
+
+def _bayesian_estimator():
+    """Bayesian (BDeu) parameter estimator for the installed pgmpy.
+
+    pgmpy >= 1.1 wants an *instance* of a discrete estimator and raised
+    ``TypeError`` with the class ``BayesianEstimator`` the generator passed, so
+    BN failed on any recent install; older pgmpy wants the class.
+    """
+    try:
+        from pgmpy.parameter_estimator import DiscreteBayesianEstimator
+    except ImportError:
+        return BayesianEstimator
+    return DiscreteBayesianEstimator()
+
+
+# BDeu equivalent sample size, pgmpy's default for BayesianEstimator.
+_BDEU_EQUIVALENT_SAMPLE_SIZE = 5
+
+
+def _ensure_isolated_cpds(model, data: pd.DataFrame) -> None:
+    """Give every node without a CPD its marginal (BDeu-smoothed) distribution.
+
+    pgmpy 1.0 ``fit`` creates no CPD for a node without edges, and sampling
+    then fails with "No CPD associated with <node>" (the AWS install); pgmpy
+    1.1 does create it.  The CPD is the one BayesianEstimator would give a
+    parentless node: counts plus ``ess / K`` pseudo-counts per state.
+    """
+    from pgmpy.factors.discrete import TabularCPD  # noqa: PLC0415
+
+    for node in model.nodes():
+        if model.get_cpds(node) is not None:
+            continue
+        counts = data[node].value_counts(sort=False)
+        states = list(counts.index)
+        alpha = _BDEU_EQUIVALENT_SAMPLE_SIZE / len(states)
+        probs = (counts.to_numpy(float) + alpha) / (counts.sum() + alpha * len(states))
+        model.add_cpds(
+            TabularCPD(
+                variable=node,
+                variable_card=len(states),
+                values=[[float(p)] for p in probs],
+                state_names={node: states},
+            )
+        )
 
 
 class BayesianNetworkGenerator(BaseGenerator):
@@ -91,15 +137,26 @@ class BayesianNetworkGenerator(BaseGenerator):
         # Discretize continuous variables for BN
         self._discretize_info = {}
 
+        # Real values of every bin: a synthetic bin is turned back into a real
+        # value drawn from that bin (an empirical donor), not a uniform draw
+        # between the bin edges, which with heavy tails put half of the top
+        # quintile near the maximum (Airbnb price).
+        self._bin_values: dict[str, dict[int, np.ndarray]] = {}
         for col in self._continuous_columns:
             if col in self._constant_columns:
                 continue
-            data_discrete[col] = pd.to_numeric(data_discrete[col], errors="coerce")
-            data_discrete[col] = data_discrete[col].fillna(data_discrete[col].median())
+            numeric = pd.to_numeric(data_discrete[col], errors="coerce")
+            observed = numeric.dropna()
+            data_discrete[col] = numeric.fillna(observed.median())
             data_discrete[col], bins = pd.qcut(
                 data_discrete[col], q=5, labels=False, duplicates="drop", retbins=True
             )
             self._discretize_info[col] = bins
+            codes = data_discrete[col].to_numpy()
+            values = numeric.to_numpy(float)
+            self._bin_values[col] = {
+                int(b): values[(codes == b) & ~np.isnan(values)] for b in np.unique(codes)
+            }
 
         # Fill NaN in categorical columns with mode
         all_cat_cols = set(self._categorical_columns) | set(self._ordinal_columns.keys())
@@ -125,12 +182,16 @@ class BayesianNetworkGenerator(BaseGenerator):
                 data_discrete[col] = data_discrete[col].astype(str).astype("category")
 
         # Learn structure
-        hc = HillClimbSearch(data_discrete)
-        best_model = hc.estimate(max_indegree=self.max_parents)
+        hc = HillClimbSearch(max_indegree=self.max_parents, return_type="dag", show_progress=False)
+        best_model = hc.fit(data_discrete).causal_graph_
 
-        # Learn parameters
+        # Learn parameters.  Isolated nodes too: built from the edges only, a
+        # column with no edge vanished from the network and was refilled with a
+        # bootstrap of the real column.
         self._model = PgmpyBayesianNetwork(best_model.edges())
-        self._model.fit(data_discrete, estimator=BayesianEstimator)
+        self._model.add_nodes_from(data_discrete.columns)
+        self._model.fit(data_discrete, estimator=_bayesian_estimator())
+        _ensure_isolated_cpds(self._model, data_discrete)
 
         self._sampler = BayesianModelSampling(self._model)
         self._is_fitted = True
@@ -146,17 +207,19 @@ class BayesianNetworkGenerator(BaseGenerator):
         for col, value in self._constant_columns.items():
             synthetic[col] = value
 
-        # Reverse discretization for continuous variables
+        # Reverse discretization for continuous variables.  A generator-owned
+        # RNG: the global ``np.random`` made these columns unreproducible.
+        rng = np.random.default_rng(self.random_state)
         for col in self._continuous_columns:
-            if col in self._discretize_info and col in synthetic.columns:
-                bins = self._discretize_info[col]
-                synthetic[col] = synthetic[col].apply(
-                    lambda x, bins=bins: (
-                        np.random.uniform(bins[int(x)], bins[int(x) + 1])
-                        if pd.notna(x) and int(x) < len(bins) - 1
-                        else (bins[int(x)] if pd.notna(x) else bins[0])
-                    )
-                )
+            if col in self._bin_values and col in synthetic.columns:
+                pools = self._bin_values[col]
+                codes = pd.to_numeric(synthetic[col], errors="coerce").to_numpy()
+                out = np.full(len(codes), np.nan)
+                for b, pool in pools.items():
+                    rows = np.flatnonzero(codes == b)
+                    if len(rows) and len(pool):
+                        out[rows] = pool[rng.integers(len(pool), size=len(rows))]
+                synthetic[col] = out
 
         # Reindex to match original column order, filling missing columns
         missing_cols = [c for c in self._columns if c not in synthetic.columns]

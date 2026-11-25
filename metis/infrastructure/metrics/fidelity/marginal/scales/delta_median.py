@@ -5,7 +5,7 @@ import pandas as pd
 
 from metis.infrastructure.metrics.registry import register
 
-from ...fidelity_base import NumericColumnMetric as MarginalMetric
+from ...fidelity_base import NumericColumnMetric as MarginalMetric, relative_difference
 
 
 @register("fidelity.delta_median")
@@ -13,8 +13,10 @@ class DeltaMedianMetric(MarginalMetric):
     """
     Delta Median - compare medians between distributions.
 
-    Measures the difference in medians between real and synthetic data,
+    ``|median_real - median_synth| / IQR_real``: the difference in medians,
     normalized by the interquartile range for robustness against outliers.
+    When the real IQR is 0 (zero-inflated columns) the real standard deviation
+    is used instead.
 
     The median is less sensitive to extreme values than the mean,
     making this metric robust for skewed distributions.
@@ -24,21 +26,8 @@ class DeltaMedianMetric(MarginalMetric):
     is_distance: bool = True
 
     def _compute_column(self, real_col: pd.Series, synth_col: pd.Series) -> float:
-        """
-        Compute Delta Median for a single column.
-
-        Args:
-            real_col: Column from real dataset
-            synth_col: Column from synthetic dataset
-
-        Returns:
-            IQR-normalized median difference in [0, ∞), lower is better
-        """
-        real_median = np.median(real_col)
-        synth_median = np.median(synth_col)
-
-        # Normalize by IQR for robustness
-        real_iqr = np.percentile(real_col, 75) - np.percentile(real_col, 25)
-        if real_iqr > 1e-10:
-            return abs(real_median - synth_median) / real_iqr
-        return abs(real_median - synth_median)
+        """IQR-normalized median difference in [0, inf), lower is better."""
+        q25, q75 = np.percentile(real_col, [25, 75])
+        return relative_difference(
+            np.median(real_col) - np.median(synth_col), q75 - q25, real_col.std()
+        )

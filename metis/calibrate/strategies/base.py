@@ -14,6 +14,50 @@ import time
 import numpy as np
 import pandas as pd
 
+from metis.shared.splits import CALIBRATION_SEED_OFFSET, DEFAULT_SPLIT, config_split, split_parts
+
+
+def tercile_split(
+    real_data: pd.DataFrame,
+    sample_size: int,
+    seed: int,
+    stratify_by: str | None = None,
+    fractions: tuple[float, float, float] = DEFAULT_SPLIT,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """``(train, holdout, unseen)``: disjoint parts of *real_data*, 3m / m / m rows.
+
+    *train* plays the rows a generator saw, *holdout* the real rows the
+    evaluation keeps apart for privacy, and *unseen* a sample the generator
+    never saw (the best synthetic table possible), with
+    ``m = min(sample_size, len(real_data) // 5)``.  Every reference is
+    evaluated at size m: METIS compares real and synthetic at the size of the
+    smaller (``equal_sizes``), as in the benchmark, where every generator
+    produces as many rows as the unseen part.  The split is the benchmark's
+    (``metis.shared.splits``), stratified by the classification target when
+    there is one.  The upper and lower strategies call it with the same seed,
+    so iteration *i* of both uses the same parts.  *fractions* are
+    ``calibration.split`` (60/20/20 unless the evaluated tables were split
+    otherwise).
+    """
+    return split_parts(real_data, sample_size, seed, stratify_by, fractions)
+
+
+def calibration_seed(base_seed: int, index: int) -> int:
+    """Seed of calibration split *index*: offset so it never reuses an evaluation seed."""
+    return base_seed + CALIBRATION_SEED_OFFSET + index
+
+
+def config_split_spec(config_template_path: str | None) -> tuple[str | None, tuple[float, float, float]]:
+    """``(stratify_by, fractions)`` of the calibration splits, from the config file."""
+    from pathlib import Path
+
+    import yaml
+
+    if not config_template_path or not Path(config_template_path).is_file():
+        return None, DEFAULT_SPLIT
+    with Path(config_template_path).open(encoding="utf-8") as fh:
+        return config_split(yaml.safe_load(fh) or {})
+
 
 class BaseCalibrationStrategy:
     """
@@ -35,6 +79,9 @@ class BaseCalibrationStrategy:
         self._metric_values: dict[str, list[dict[str, float]]] = {}
         # Per-metric raw (pre-normalization) values, same structure.
         self._raw_metric_values: dict[str, list[dict[str, float]]] = {}
+        # Column the splits are stratified by (set from the config in calibrate()).
+        self._stratify_by: str | None = None
+        self._split: tuple[float, float, float] = DEFAULT_SPLIT
 
     @property
     def metric_values_per_iteration(self) -> dict[str, list[dict[str, float]]]:
@@ -90,9 +137,11 @@ class BaseCalibrationStrategy:
 
         start_time = time.time()
         iteration_times: list[float] = []
+        failures: list[str] = []
         results_by_family: dict[str, list[float]] = {}
         self._metric_values = {}  # reset
         self._raw_metric_values = {}  # reset
+        self._stratify_by, self._split = config_split_spec(config_template_path)
 
         for i in range(n_iterations):
             seed = self._iteration_seed(base_seed, i)
@@ -131,7 +180,16 @@ class BaseCalibrationStrategy:
                     " | ".join(f"{k}={v:.4f}" for k, v in family_scores.items()),
                 )
             except Exception as e:
-                self.logger.error("  Iteration %d failed: %s", i + 1, e)
+                failures.append(f"{type(e).__name__}: {e}")
+                self.logger.exception("  Iteration %d failed: %s", i + 1, e)
+
+        if n_iterations > 0 and not iteration_times:
+            # Every iteration failed: returning ``{}`` let the calibrator go on
+            # and cache bounds without any family.
+            raise RuntimeError(
+                f"{strategy_name}: all {n_iterations} calibration iterations failed "
+                f"(first error: {failures[0]})"
+            )
 
         total_time = time.time() - start_time
         self._log_summary(strategy_name, results_by_family, iteration_times, total_time)
@@ -150,7 +208,7 @@ class BaseCalibrationStrategy:
 
     def _iteration_seed(self, base_seed: int, index: int) -> int:
         """Compute the seed for a given iteration. Subclasses may override."""
-        return base_seed + index
+        return calibration_seed(base_seed, index)
 
     def _run_single_iteration(
         self,

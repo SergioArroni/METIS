@@ -28,13 +28,15 @@ class StrategyResult:
     """Result from a single training strategy evaluation."""
 
     strategy: TrainingStrategy
-    score: float  # Primary metric (F1 for classification, 1-MAE_normalized for regression)
+    score: float  # Mean raw metric over splits (weighted F1 or MAE)
     raw_metric: float  # Raw metric value (F1 or MAE)
     scores_per_run: list[float]  # Scores from multiple runs
     std: float  # Standard deviation across runs
     best_params: dict[str, Any]  # Best hyperparameters from optimization
     is_valid: bool = True
     error: str | None = None
+    # Secondary scores of the same fits, one per split (``log_loss``...).
+    extra_scores_per_run: dict[str, list[float]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -57,7 +59,7 @@ class MLEfficiencyResult:
     final_score: float  # Aggregated score in [0, 1]
     baseline_score: float  # TTR score (reference)
     strategy_results: dict[TrainingStrategy, StrategyResult]
-    delta_scores: dict[str, float]  # |strategy - TTR| for each strategy
+    delta_scores: dict[str, float]  # raw loss against TTR per strategy
     task_type: str  # "classification" or "regression"
     metric_name: str  # "f1" or "mae"
     n_features: int
@@ -143,5 +145,4 @@ class BaseStrategyMetric(ABC):
     @abstractmethod
     def get_description(self) -> str:
         """Return human-readable description of this strategy."""
-        pass
         pass

@@ -1,0 +1,84 @@
+##### res_fid_l12.txt
+control mediana/mediana/ssd vs METIS: 0.017752266444157505
+
+casos: 240
+                   detectados_z>=3  no_detectados_z<2  z_mediano  ruido_buenas_sd  nota_media_buenas
+mean/mean/ssd                1.000                  0       17.7           0.0076              0.901
+mean/median/ssd              1.000                  0       18.0           0.0077              0.903
+mean/ssd/ssd                 1.000                  0       22.6           0.0068              0.889
+median/mean/ssd              1.000                  0       18.1           0.0078              0.906
+median/median/ssd            0.996                  0       18.1           0.0080              0.908
+median/ssd/ssd               1.000                  0       20.5           0.0072              0.893
+ssd/mean/ssd                 1.000                  0       18.8           0.0086              0.898
+ssd/median/ssd               1.000                  0       18.6           0.0087              0.900
+ssd/ssd/ssd                  1.000                  0       24.8           0.0076              0.886
+##### res_fid_l3.txt
+control media/media/ssd vs METIS (v2): 0.0
+
+casos: 240
+                  detectados_z>=3  no_detectados_z<2  z_mediano  ruido_buenas_sd  nota_media_buenas
+mean/mean/mean              1.000                  0       15.1           0.0064              0.911
+mean/mean/median            0.721                 60        9.7           0.0064              0.957
+mean/mean/ssd               1.000                  0       17.7           0.0076              0.901
+##### res_priv.txt
+control mediana/mediana/ssd vs METIS: 0.29545793286618083
+
+casos: 32
+                   detectados_z>=3  no_detectados_z<2  z_mediano  ruido_buenas_sd  nota_media_buenas
+mean/mean/ssd                0.844                  5      156.3           0.0016              0.995
+mean/median/ssd              0.219                  1       48.7           0.0000              1.000
+mean/ssd/ssd                 0.844                  5      217.7           0.0016              0.994
+median/mean/ssd              0.844                  4      155.7           0.0017              0.995
+median/median/ssd            0.219                  1       48.9           0.0000              1.000
+median/ssd/ssd               0.844                  4      214.7           0.0017              0.995
+ssd/mean/ssd                 0.844                  5      160.5           0.0016              0.995
+ssd/median/ssd               0.219                  1       48.5           0.0000              1.000
+ssd/ssd/ssd                  0.844                  5      216.1           0.0016              0.994
+##### res_priv_delta.txt
+=== fugas: detectadas (z ≥ 3), no detectadas (z < 2); control: falsas alarmas (z ≥ 3) ===
+                   fugas_detectadas  fugas_no_detectadas  falsas_alarmas_control  z_mediano_fugas
+mean/mean/ssd                 0.964                    1                       0            174.0
+mean/median/ssd               0.250                    0                       0             56.9
+mean/ssd/ssd                  0.964                    1                       0            278.4
+median/mean/ssd               0.964                    1                       0            167.7
+median/median/ssd             0.250                    0                       0             57.1
+median/ssd/ssd                0.964                    1                       0            252.5
+ssd/mean/ssd                  0.964                    1                       0            173.3
+ssd/median/ssd                0.250                    0                       0             56.6
+ssd/ssd/ssd                   0.964                    1                       0            277.2
+
+=== cuánto baja la nota de privacidad (Δ, media de las 4 tablas) por fuga y regla ===
+                  mean/mean/ssd  mean/median/ssd  mean/ssd/ssd  median/mean/ssd  median/median/ssd  median/ssd/ssd  ssd/mean/ssd  ssd/median/ssd  ssd/ssd/ssd
+defecto                                                                                                                                                      
+copias_1                  0.080            0.010         0.109            0.082              0.010           0.112         0.081           0.010        0.110
+copias_5                  0.298            0.059         0.509            0.299              0.059           0.510         0.298           0.059        0.509
+copias_10                 0.365            0.108         0.602            0.367              0.108           0.603         0.366           0.108        0.602
+copias_25                 0.477            0.254         0.667            0.482              0.255           0.669         0.478           0.255        0.668
+copias_100                0.952            0.986         0.958            0.974              0.990           0.975         0.966           0.986        0.967
+casi_copias_10            0.215            0.084         0.328            0.216              0.083           0.330         0.216           0.084        0.329
+casi_copias_25            0.361            0.206         0.541            0.363              0.206           0.543         0.362           0.206        0.542
+control_sin_fuga         -0.003            0.000        -0.003           -0.003              0.000          -0.003        -0.003           0.000       -0.003
+
+=== z por fuga y regla (mediana de las 4 tablas) ===
+                  mean/mean/ssd  mean/median/ssd  mean/ssd/ssd  median/mean/ssd  median/median/ssd  median/ssd/ssd  ssd/mean/ssd  ssd/median/ssd  ssd/ssd/ssd
+defecto                                                                                                                                                      
+copias_1                   81.0              7.8         105.0             91.7                8.5           126.3          81.9             7.8        106.4
+copias_5                  239.7             28.2         422.9            232.7               28.7           410.6         237.4            28.1        418.9
+copias_10                 274.3             56.9         456.0            266.1               57.1           442.4         271.7            56.6        451.6
+copias_25                 350.4            139.2         486.8            339.6              139.1           472.2         347.1           138.4        482.2
+copias_100                707.0            579.0         701.6            685.9              579.5           680.8         700.7           575.7        695.1
+casi_copias_10            108.8             40.5         138.8            125.2               40.7           153.8         110.1            40.3        140.4
+casi_copias_25            265.3            110.0         405.5            257.5              110.3           394.2         262.9           109.4        401.7
+control_sin_fuga            0.5              0.0           0.5              0.5                0.0             0.5           0.5             0.0          0.5
+
+=== z por tabla, copias del 5 % y 10 % ===
+                   mean/mean/ssd  mean/median/ssd  mean/ssd/ssd  median/mean/ssd  median/median/ssd  median/ssd/ssd  ssd/mean/ssd  ssd/median/ssd  ssd/ssd/ssd
+defecto   dataset                                                                                                                                             
+copias_10 adult            374.7              NaN         622.9            374.6                NaN           622.9         370.2             NaN        615.4
+copias_5  adult            327.3              NaN         578.1            327.2                NaN           578.2         323.4             NaN        571.1
+copias_10 cardio           173.9             56.9         289.1            157.5               57.1           261.9         173.3            56.6        287.9
+copias_5  cardio           152.1             28.2         267.7            138.1               28.7           243.1         151.5            28.1        266.6
+copias_10 rrhh              59.8              NaN          84.0             61.4                NaN            84.5          59.8             NaN         83.6
+copias_5  rrhh              37.6              NaN          47.6             38.4                NaN            48.1          37.6             NaN         47.4
+copias_10 telco            653.9              NaN        1091.2            965.1                NaN          1612.0         651.0             NaN       1086.4
+copias_5  telco            560.2              NaN         989.1            826.0                NaN          1460.1         557.7             NaN        984.7

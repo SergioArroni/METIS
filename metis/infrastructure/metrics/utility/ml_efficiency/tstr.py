@@ -30,9 +30,12 @@ class TSTRMetric(BaseStrategyMetric):
     Test: Same held-out real split used by TTR (same seed)
 
     Using the same split ratio and seed for both real and synthetic
-    avoids data-leakage when ``synth == real`` (e.g. the ``real_data``
-    baseline generator) and makes the training-volume comparison with
-    TTR fair (80 % each).
+    avoids data-leakage when ``synth == real`` row for row (e.g. the
+    ``real_data`` baseline generator). The training volume equals TTR's only
+    when both tables have the same size; a larger synthetic table trains on
+    more rows. Without a holdout, a generator that memorised the real table
+    (in another row order) does train on the real test rows: only
+    ``context["holdout"]`` rules that out.
     """
 
     strategy = TrainingStrategy.TSTR
@@ -55,9 +58,9 @@ class TSTRMetric(BaseStrategyMetric):
         the real data is used for evaluation.
 
         This guarantees:
-        * Fair comparison with TTR: same test set, same training volume.
-        * No data leakage when ``synth == real``: the 80 % train and
-          20 % test partitions are identical in that case, so the model
+        * Paired comparison with TTR: same real test rows.
+        * No data leakage when ``synth == real`` row for row: the 80 % train
+          and 20 % test partitions are identical in that case, so the model
           never trains on the test rows.
 
         Args:
@@ -97,5 +100,4 @@ class TSTRMetric(BaseStrategyMetric):
 
     def get_description(self) -> str:
         """Return human-readable description."""
-        return "Train on Synthetic, Test on Real (Practical utility)"
         return "Train on Synthetic, Test on Real (Practical utility)"

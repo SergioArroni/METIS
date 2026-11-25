@@ -8,11 +8,18 @@ Score is normalized to [0, 1] where 1 = most private (classifier fails).
 """
 
 import numpy as np
+from sklearn.neighbors import NearestNeighbors
 
 from metis.domain.entities import MetricResult
 from metis.infrastructure.metrics.registry import register
 
 from ...privacy_base import EmpiricalSimilarityMetric
+
+# Distances closer than this (relative) count as a tie.
+_TIE_TOLERANCE = 1e-9
+# Subsample draws averaged by the privacy loss (the three tables are cut to
+# the same size in each draw).
+_N_DRAWS = 5
 
 
 @register("privacy.nnaa")
@@ -20,26 +27,27 @@ class NNAAMetric(EmpiricalSimilarityMetric):
     """
     Nearest Neighbor Adversarial Accuracy (NNAA) Privacy Metric.
 
-    NNAA measures privacy by checking if an adversary can distinguish
-    real from synthetic records using nearest neighbor relationships.
+    Privacy loss of Yale et al. (2020): the nearest-neighbour adversarial
+    accuracy of the synthetic table against the training records, ``AA_TS``,
+    compared with the same accuracy against the holdout, ``AA_ES``
+    (``context["holdout"]``):
 
-    For each synthetic record:
-    - Find its nearest neighbor in the combined (real + synthetic) dataset
-    - If nearest neighbor is real: potential privacy leak
-    - If nearest neighbor is synthetic: good privacy
+        AA_XS = ½·[P(d_XS(x) > d_XX(x)) + P(d_SX(s) > d_SS(s))]
 
-    The adversarial accuracy is the fraction of synthetic records whose
-    nearest neighbor is a real record.
+    (``d_XS(x)``: distance from a record of X to its closest synthetic
+    record; ``d_XX``: to its closest other record of X; ties split).  Each
+    term is the accuracy of a 1-NN classifier telling X from S.  A generator
+    that memorised its training rows looks *more* like them than like the
+    holdout: ``AA_TS`` drops below ``AA_ES``.
 
-    Process:
-    1. Combine real and synthetic datasets
-    2. For each synthetic record, find nearest neighbor in combined set
-    3. Compute fraction whose nearest neighbor is real
-    4. Privacy score = 1 - adversarial accuracy
+        privacy loss = AA_ES − AA_TS,  privacy = 1 − clip(loss / 0.5, 0, 1)
 
-    Interpretation:
-        - NNAA = 0.5: Random (can't distinguish) → Score = 1.0 (good privacy)
-        - NNAA = 1.0: All synthetic nearest to real → Score = 0.0 (poor privacy)
+    (0.5 is the loss of an exact copy: ``AA_TS = 0``, ``AA_ES ≈ 0.5``).  The
+    three tables are subsampled to the same size, as AA requires.  An
+    average-case view, like DCR.  Until 2026-10-14 the score was the
+    accuracy against the real table alone: it measured resemblance, so a
+    generator farther from the real rows hid its copies (25 % of copies kept
+    it at 0.86 on adult) and an independent sample scored 0.91 on telco.
 
     References:
         - Yale et al. (2019): Privacy Preserving Synthetic Health Data
@@ -60,9 +68,16 @@ class NNAAMetric(EmpiricalSimilarityMetric):
         Initialize NNAA metric.
 
         Args:
-            exclude_self: If True, excludes the query point itself when searching
-                         (important when query is in the search set)
+            exclude_self: Must be True: every synthetic query belongs to the
+                combined set, so without excluding it each query is its own
+                nearest neighbour and the score is always 1. Kept for
+                configuration compatibility.
         """
+        if not exclude_self:
+            raise ValueError(
+                "exclude_self=False makes every synthetic record its own nearest "
+                "neighbour (NNAA would always be 1); it must be True"
+            )
         super().__init__()
         self.exclude_self = exclude_self
 
@@ -74,125 +89,48 @@ class NNAAMetric(EmpiricalSimilarityMetric):
             MetricResult with privacy score in [0, 1] where 1 = most private
         """
         try:
-            # Get numeric columns
-            numeric_cols = self._get_numeric_columns()
-            if not numeric_cols:
-                return self._create_error_result("No numeric columns found")
-
-            # Prepare data
-            real_data = self._real_data[numeric_cols].fillna(0).values
-            synth_data = self._synth_data[numeric_cols].fillna(0).values
-
-            n_real = len(real_data)
-            n_synth = len(synth_data)
-
-            if n_real < 2 or n_synth < 2:
+            holdout = self._get_holdout()
+            if holdout is None:
+                return self._no_holdout_result("NNAA")
+            columns = self._common_columns()
+            if not columns:
+                return self._create_error_result("No shared columns found")
+            n = min(len(self._real_data), len(holdout), len(self._synth_data))
+            if n < 2:
                 return self._create_error_result(
-                    f"Insufficient data: {n_real} real, {n_synth} synthetic records"
+                    f"Insufficient data: {len(self._real_data)} real, {len(holdout)} holdout, "
+                    f"{len(self._synth_data)} synthetic records"
                 )
 
-            # Standardize
-            from sklearn.preprocessing import StandardScaler
+            rng = np.random.default_rng(self._context.get("seed", 42))
+            encoder = self._real_distance_space(columns)["encoder"]
 
-            scaler = StandardScaler()
-            real_scaled = scaler.fit_transform(real_data)
-            synth_scaled = scaler.transform(synth_data)
+            def sample(frame) -> np.ndarray:
+                rows = np.sort(rng.choice(len(frame), n, replace=False))
+                return encoder.transform(frame.iloc[rows])
 
-            # Combine datasets
-            combined_data = np.vstack([real_scaled, synth_scaled])
-
-            # Build KNN on combined data
-            from sklearn.neighbors import NearestNeighbors
-
-            k = 2 if self.exclude_self else 1  # Extra neighbor to exclude self
-            knn = NearestNeighbors(n_neighbors=k)
-            knn.fit(combined_data)
-
-            # Query with synthetic records
-            distances, indices = knn.kneighbors(synth_scaled)
-
-            # For each synthetic record, check if NN is real or synthetic
-            nn_is_real = []
-            nn_distances = []
-
-            for i, (dist, idx) in enumerate(zip(distances, indices)):
-                # Get the neighbor index (exclude self if needed)
-                if self.exclude_self:
-                    # Skip if first neighbor is self
-                    synth_idx_in_combined = n_real + i
-                    if idx[0] == synth_idx_in_combined:
-                        nn_idx = idx[1]
-                        nn_dist = dist[1]
-                    else:
-                        nn_idx = idx[0]
-                        nn_dist = dist[0]
-                else:
-                    nn_idx = idx[0]
-                    nn_dist = dist[0]
-
-                # Check if nearest neighbor is real (index < n_real)
-                is_real = nn_idx < n_real
-                nn_is_real.append(is_real)
-                nn_distances.append(nn_dist)
-
-            nn_is_real = np.array(nn_is_real)
-            nn_distances = np.array(nn_distances)
-
-            # Compute NNAA (fraction of synthetic whose NN is real)
-            adversarial_accuracy = float(np.mean(nn_is_real))
-
-            # Also compute the reverse: for real records, is NN synthetic?
-            real_distances, real_indices = knn.kneighbors(real_scaled)
-
-            real_nn_is_synth = []
-            for i, (_dist, idx) in enumerate(zip(real_distances, real_indices)):
-                if self.exclude_self:
-                    if idx[0] == i:  # Self
-                        nn_idx = idx[1]
-                    else:
-                        nn_idx = idx[0]
-                else:
-                    nn_idx = idx[0]
-
-                is_synth = nn_idx >= n_real
-                real_nn_is_synth.append(is_synth)
-
-            real_nn_is_synth = np.array(real_nn_is_synth)
-            reverse_accuracy = float(np.mean(real_nn_is_synth))
-
-            # Privacy score: perfect privacy when NNAA = 0.5 (random)
-            # NNAA > 0.5: synthetic records cluster near real → poor privacy
-            # NNAA < 0.5: synthetic records cluster together → good (but might indicate mode collapse)
-
-            # Score formula: distance from 0.5, penalize high NNAA more
-            if adversarial_accuracy >= 0.5:
-                # High NNAA: synthetic near real → poor privacy
-                privacy_score = 1.0 - 2 * (adversarial_accuracy - 0.5)
-            else:
-                # Low NNAA: synthetic cluster together → good privacy but flag separately
-                privacy_score = 1.0
-
-            privacy_score = max(0.0, min(1.0, privacy_score))
-
-            # Compute distance statistics for additional insight
-            mean_nn_distance = float(np.mean(nn_distances))
-            median_nn_distance = float(np.median(nn_distances))
+            # Averaged over draws: one draw of 100 rows put an independent
+            # sample at a loss of 0.17.
+            aa_ts, aa_es = [], []
+            for _ in range(_N_DRAWS):
+                train, hold = sample(self._real_data), sample(holdout)
+                synth = sample(self._synth_data)
+                aa_ts.append(self._adversarial_accuracy(train, synth))
+                aa_es.append(self._adversarial_accuracy(hold, synth))
+            aa_ts, aa_es = float(np.mean(aa_ts)), float(np.mean(aa_es))
+            loss = aa_es - aa_ts
+            privacy_score = 1.0 - min(1.0, max(0.0, loss / 0.5))
 
             details = {
-                "adversarial_accuracy": adversarial_accuracy,
-                "reverse_accuracy": reverse_accuracy,  # Real records with synth NN
                 "privacy_score": float(privacy_score),
-                "synth_to_real_count": int(np.sum(nn_is_real)),
-                "synth_to_synth_count": int(np.sum(~nn_is_real)),
-                "distance_stats": {
-                    "mean": mean_nn_distance,
-                    "median": median_nn_distance,
-                    "min": float(np.min(nn_distances)),
-                    "max": float(np.max(nn_distances)),
-                },
-                "n_real": n_real,
-                "n_synth": n_synth,
-                "interpretation": self._interpret_score(privacy_score, adversarial_accuracy),
+                "privacy_loss": float(loss),
+                "excess_risk_signed": float(loss / 0.5),
+                "aa_training_synthetic": aa_ts,
+                "aa_holdout_synthetic": aa_es,
+                "n_per_table": n,
+                "columns": columns,
+                "interpretation": self._interpret_score(privacy_score, loss),
+                **self._holdout_details(),
             }
 
             return MetricResult(
@@ -206,14 +144,68 @@ class NNAAMetric(EmpiricalSimilarityMetric):
         except Exception as e:
             return self._create_error_result(f"NNAA computation failed: {str(e)}")
 
-    def _interpret_score(self, score: float, nnaa: float) -> str:
+    @classmethod
+    def _adversarial_accuracy(cls, x: np.ndarray, synth: np.ndarray) -> float:
+        """``AA_XS``: accuracy of the 1-NN classifier telling X from S (ties split)."""
+        x_index = NearestNeighbors().fit(x)
+        s_index = NearestNeighbors().fit(synth)
+        share_x, _ = cls._nn_real_share(x, x_index, s_index, query_is_real=True)
+        share_s, _ = cls._nn_real_share(synth, x_index, s_index, query_is_real=False)
+        return float(0.5 * (np.mean(share_x) + np.mean(1.0 - share_s)))
+
+    @staticmethod
+    def _nn_real_share(
+        queries: np.ndarray,
+        real_index: NearestNeighbors,
+        synth_index: NearestNeighbors,
+        *,
+        query_is_real: bool,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Per query, the probability that its nearest *other* record is real.
+
+        The query itself (it belongs to the real or the synthetic set) is
+        excluded by taking the second neighbour in its own set.  Ties at the
+        nearest distance are split in proportion to how many real and
+        synthetic records share it, i.e. random tie-breaking.  Taking the
+        first index instead favoured the real rows (they come first), so with
+        discrete data, where exact ties are the rule, an independent sample
+        scored as a copy.
+
+        Returns ``(share, nearest_distance)``.
+        """
+        own, other = (real_index, synth_index) if query_is_real else (synth_index, real_index)
+        d_own = own.kneighbors(queries, n_neighbors=2)[0][:, 1]
+        d_other = other.kneighbors(queries, n_neighbors=1)[0][:, 0]
+        d_real, d_synth = (d_own, d_other) if query_is_real else (d_other, d_own)
+        nearest = np.minimum(d_real, d_synth)
+        tol = _TIE_TOLERANCE * (1.0 + nearest)
+        share = np.where(d_real < d_synth, 1.0, 0.0)
+        tied = np.abs(d_real - d_synth) <= tol
+        if tied.any():
+            # Records within the nearest distance; the query itself is in its own set.
+            radius = nearest[tied] + tol[tied]
+            q = queries[tied]
+            n_real = np.empty(q.shape[0])
+            n_synth = np.empty(q.shape[0])
+            # One radius query per distinct tie distance (discrete data: very few).
+            for r in np.unique(radius):
+                rows = radius == r
+                n_real[rows] = [len(i) for i in real_index.radius_neighbors(q[rows], r)[1]]
+                n_synth[rows] = [len(i) for i in synth_index.radius_neighbors(q[rows], r)[1]]
+            if query_is_real:
+                n_real = n_real - 1
+            else:
+                n_synth = n_synth - 1
+            share[tied] = n_real / np.maximum(n_real + n_synth, 1)
+        return share, nearest
+
+    def _interpret_score(self, score: float, loss: float) -> str:
         """Provide human-readable interpretation of the privacy score."""
+        msg = f"privacy loss AA_ES − AA_TS = {loss:.3f}"
         if score >= 0.9:
-            return f"Excellent privacy - NNAA={nnaa:.2f}, near random (0.5)"
+            return f"No average excess - {msg}"
         if score >= 0.7:
-            return f"Good privacy - NNAA={nnaa:.2f}, limited distinguishability"
-        if score >= 0.5:
-            return f"Moderate privacy - NNAA={nnaa:.2f}, some synthetic-real clustering"
-        if score >= 0.3:
-            return f"Poor privacy - NNAA={nnaa:.2f}, synthetic records near real"
-        return f"Critical privacy risk - NNAA={nnaa:.2f}, synthetic records very close to real"
+            return f"Some excess - {msg}"
+        if score >= 0.4:
+            return f"Clear excess - {msg}, synthetic records resemble the training rows"
+        return f"Severe excess - {msg}, synthetic records are near-copies"

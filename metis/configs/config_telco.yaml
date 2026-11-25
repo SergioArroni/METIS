@@ -17,26 +17,26 @@ data:
 
   schema:
     customerID: id
-    gender: categorical
-    SeniorCitizen: boolean
-    Partner: boolean
-    Dependents: boolean
-    PhoneService: boolean
-    MultipleLines: categorical
-    InternetService: categorical
-    OnlineSecurity: categorical
-    OnlineBackup: categorical
-    DeviceProtection: categorical
-    TechSupport: categorical
-    StreamingTV: categorical
-    StreamingMovies: categorical
-    tenure: continuous
-    Contract: categorical
-    PaperlessBilling: boolean
-    PaymentMethod: categorical
+    gender: nominal
+    SeniorCitizen: nominal
+    Partner: nominal
+    Dependents: nominal
+    PhoneService: nominal
+    MultipleLines: nominal
+    InternetService: nominal
+    OnlineSecurity: nominal
+    OnlineBackup: nominal
+    DeviceProtection: nominal
+    TechSupport: nominal
+    StreamingTV: nominal
+    StreamingMovies: nominal
+    tenure: {type: discrete, step: 1}
+    Contract: nominal
+    PaperlessBilling: nominal
+    PaymentMethod: nominal
     MonthlyCharges: continuous
     TotalCharges: continuous
-    Churn: boolean
+    Churn: nominal
 
 # ── 2. MÉTRICAS (compartidas por pipeline, calibración y benchmark) ──────────
 
@@ -48,13 +48,13 @@ metrics:
   - "fidelity.marginal.coverage"
   - "fidelity.conditional"
   # Utility:
-  - "utility.tts"
+  # Utility as a substitute for real training data: TSTR only.  TTS, TRTS
+  # and TTRS measure other things (TTRS gave 0.89-0.92 to useless tables).
   - "utility.tstr"
-  - "utility.trts"
-  - "utility.ttrs"
+  - "utility.log_loss"
   # Privacy via subcategory shortcuts:
-  - "privacy.dataset_based.attribute_inference"
-  - "privacy.dataset_based.reidentification"
+  - "privacy.dataset_based.attacks"
+  - "privacy.dataset_based.syntactic"
   - "privacy.dataset_based.empirical_similarity"
 
 # ── 3. REPRODUCIBILIDAD ─────────────────────────────────────────────────────
@@ -65,10 +65,9 @@ reproducibility:
 # ── 4. CALIBRACIÓN (opcional) ────────────────────────────────────────────────
 
 calibration:
-  n_iterations: 5
+  n_iterations: 10
   sample_percentage: 100.0
   n_jobs: 1
-  tune_aggregators: true
 
 # ── 5. EVALUACIÓN (pipeline normal con CSV sintético) ────────────────────────
 

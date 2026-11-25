@@ -9,11 +9,9 @@ Computes association metrics between numeric and categorical columns:
 
 from .eta_squared import EtaSquaredMetric
 from .kruskal_epsilon import KruskalEpsilonMetric
-from .num_cat_aggregator import NumCatMetrics
 from .point_biserial import PointBiserialMetric
 
 __all__ = [
-    "NumCatMetrics",
     "PointBiserialMetric",
     "EtaSquaredMetric",
     "KruskalEpsilonMetric",

@@ -8,7 +8,7 @@ from typing import Any
 import pandas as pd
 
 from ...domain.entities import DatasetSpec
-from ...infrastructure.io.loaders import load_csv
+from ...infrastructure.io.loaders import load_table
 from ...infrastructure.runtime.logging import get_logger
 from ...shared.config_utils import none_safe as _none_safe
 
@@ -31,10 +31,9 @@ class DataLoader:
         data_cfg = config["data"]
 
         # Resolve per-file or global CSV separators
-        real_params = self._csv_params(data_cfg, prefix="real")
         synth_params = self._csv_params(data_cfg, prefix="synth")
 
-        real_df = load_csv(data_cfg["real"], **real_params)
+        real_df = self.load_real(config)
 
         synth_path = _none_safe(data_cfg.get("synthetic"))
         if synth_path is None:
@@ -43,7 +42,7 @@ class DataLoader:
                 "the file-based loader compares real vs synthetic CSV files. "
                 "Use a valid synthetic path for evaluate mode."
             )
-        synth_df = load_csv(synth_path, **synth_params)
+        synth_df = load_table(synth_path, **synth_params)
 
         self._logger.info(
             "Loaded raw data: real=%d rows, synth=%d rows",
@@ -51,14 +50,38 @@ class DataLoader:
             len(synth_df),
         )
 
-        spec = DatasetSpec(
+        return real_df, synth_df, self.build_spec(config)
+
+    def load_real(self, config: dict[str, Any]) -> pd.DataFrame:
+        """Load only the real table (``data.real``) with its separator."""
+        data_cfg = config["data"]
+        return load_table(data_cfg["real"], **self._csv_params(data_cfg, prefix="real"))
+
+    def load_holdout(self, config: dict[str, Any]) -> pd.DataFrame | None:
+        """Load the optional real holdout (``data.holdout``), or ``None``.
+
+        Separator: ``data.holdout_separator`` → ``data.real_separator`` →
+        ``data.separator``; the holdout is real data, so it defaults to the
+        real table's format.
+        """
+        data_cfg = config["data"]
+        path = _none_safe(data_cfg.get("holdout"))
+        if path is None:
+            return None
+        holdout = load_table(path, **self._holdout_csv_params(data_cfg))
+        self._logger.info("Loaded holdout: %d rows", len(holdout))
+        return holdout
+
+    @staticmethod
+    def build_spec(config: dict[str, Any]) -> DatasetSpec:
+        """DatasetSpec from the ``data`` section."""
+        data_cfg = config["data"]
+        return DatasetSpec(
             target=_none_safe(data_cfg.get("target")),
             task_type=_none_safe(data_cfg.get("task_type")),
             dtypes=data_cfg.get("dtypes", {}),
             constraints=data_cfg.get("constraints", {}),
         )
-
-        return real_df, synth_df, spec
 
     def load_from_dataframes(
         self,
@@ -70,16 +93,20 @@ class DataLoader:
 
         Used by calibration and programmatic API.
         """
-        data_cfg = config["data"]
-        spec = DatasetSpec(
-            target=_none_safe(data_cfg.get("target")),
-            task_type=_none_safe(data_cfg.get("task_type")),
-            dtypes=data_cfg.get("dtypes", {}),
-            constraints=data_cfg.get("constraints", {}),
-        )
-        return real_df, synth_df, spec
+        return real_df, synth_df, self.build_spec(config)
 
     # ----- helpers -----------------------------------------------------------
+
+    @classmethod
+    def _holdout_csv_params(cls, data_cfg: dict) -> dict[str, Any]:
+        """``holdout_separator`` -> ``real_separator`` -> ``separator``.
+
+        ``_csv_params(prefix="holdout")`` already falls back to the global
+        ``separator``, which then won over ``real_separator``.
+        """
+        if _none_safe(data_cfg.get("holdout_separator")) is not None:
+            return cls._csv_params(data_cfg, prefix="holdout")
+        return cls._csv_params(data_cfg, prefix="real")
 
     @staticmethod
     def _csv_params(data_cfg: dict, prefix: str) -> dict[str, Any]:

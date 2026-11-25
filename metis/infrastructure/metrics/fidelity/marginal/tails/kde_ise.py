@@ -20,7 +20,10 @@ class KDEISEMetric(TailMetric):
 
     ISE = ∫(f_real(x) - f_synth(x))² dx
 
-    The ISE is in [0, ∞) and will be normalized using robust percentiles.
+    The ISE has units of 1/x (squared density times dx); it is multiplied by
+    the real column's standard deviation, which makes it the ISE of the
+    standardised densities, before the absolute normalization of the central
+    registry.
     """
 
     name: str = "kde_ise"
@@ -41,10 +44,14 @@ class KDEISEMetric(TailMetric):
         real_values = real_col.values
         synth_values = synth_col.values
 
-        # Check for sufficient variance
-        if np.std(real_values) < 1e-10 or np.std(synth_values) < 1e-10:
-            # Near-constant columns: compare means
-            return abs(np.mean(real_values) - np.mean(synth_values))
+        # Constant columns have a Dirac density: the ISE against anything else
+        # is infinite. It used to return |mean difference|, so a synthetic
+        # column collapsed onto the real mean scored a perfect 1.
+        real_const = np.ptp(real_values) == 0
+        synth_const = np.ptp(synth_values) == 0
+        if real_const or synth_const:
+            same = real_const and synth_const and real_values[0] == synth_values[0]
+            return 0.0 if same else float("inf")
 
         try:
             # Fit KDEs
@@ -74,5 +81,13 @@ class KDEISEMetric(TailMetric):
             return float(ise)
 
         except np.linalg.LinAlgError:
-            # KDE fitting can fail for degenerate data
-            return 0.0
+            # KDE fitting can fail for degenerate data: the value is unknown,
+            # not perfect.
+            return float("nan")
+
+    def _scale_free_value(self, raw_value: float, real_col: pd.Series) -> float:
+        """ISE of the densities of the standardised variable (ISE · σ_real)."""
+        sigma = float(real_col.std())
+        if not sigma > 1e-12:
+            return 0.0 if raw_value <= 1e-12 else float("inf")
+        return raw_value * sigma

@@ -1,0 +1,1 @@
+{"target_vars": ["cardio"], "target_types": {"cardio": 2}, "confounder_vars": {"cardio": []}, "sensitive_vars": []}

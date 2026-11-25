@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from .base import BaseStrategyMetric, TrainingStrategy, balance_datasets
+from .base import BaseStrategyMetric, TrainingStrategy, subsample
 
 
 class TTRSMetric(BaseStrategyMetric):
@@ -57,14 +57,17 @@ class TTRSMetric(BaseStrategyMetric):
         X_synth = synth_data[feature_cols].copy()
         y_synth = synth_data[target_col].values
 
-        # Balance datasets for fair comparison
-        X_real, y_real, X_synth, y_synth = balance_datasets(X_real, y_real, X_synth, y_synth, seed)
+        # The real split is TTR's (same rows, same seed): the paired delta
+        # against TTR needs the same test rows. Only the synthetic table is
+        # capped at the real size (it used to subsample the *real* table when
+        # the synthetic one was smaller, which changed the test rows).
+        X_synth, y_synth = subsample(X_synth, y_synth, len(X_real), seed)
 
         X_train_real, X_test, y_train_real, y_test = train_test_split(
             X_real, y_real, test_size=test_size, random_state=seed
         )
 
-        # Use all synthetic for training (already limited)
+        # Synthetic training part: (1 − test_size) of the capped synthetic table
         X_train_synth, _, y_train_synth, _ = train_test_split(
             X_synth, y_synth, test_size=test_size, random_state=seed
         )
@@ -88,5 +91,4 @@ class TTRSMetric(BaseStrategyMetric):
 
     def get_description(self) -> str:
         """Return human-readable description."""
-        return "Train on Real+Synthetic cocktail, Test on Real (Augmentation)"
         return "Train on Real+Synthetic cocktail, Test on Real (Augmentation)"

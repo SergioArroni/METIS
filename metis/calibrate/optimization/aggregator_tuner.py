@@ -9,18 +9,119 @@ Two entry points:
   aggregator **and** the best composite aggregator.  This is the
   recommended path because it ensures bounds are computed with the same
   aggregation that will be used at evaluation time.
+
+Family scores are computed by :class:`metis.application.aggregator.Aggregator`
+itself (metrics -> subcategory -> category -> family, with the candidate
+aggregator at every level and ``aggregation.weights`` / ``risk_aversion``
+from the config).  The tuner used to apply each candidate to the *flat*
+vector of metric values while the evaluation is hierarchical, so the bounds
+were computed on a different statistic than the one they normalise:
+``s_cal = (s_hier - l_flat) / (u_flat - l_flat)``.
 - ``tune``: receives pre-aggregated family scores.  Kept for backward
   compatibility but only useful when per-metric data is unavailable.
 """
 
 import json
 import logging
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from metis.infrastructure.metrics.aggregation.stochastic_dominance import DEFAULT_RISK_AVERSION
 from metis.shared.aggregation_registry import AGGREGATION_FUNCTIONS
+
+# Families whose reference orientation is known: real-vs-real must score high
+# and real-vs-noise low.  Only for the others (privacy) is an aggregator that
+# reverses the references accepted (``min(normal, inverted)`` error); for
+# fidelity / utility that reversal used to score zero error and win.
+_KNOWN_ORIENTATION_FAMILIES = frozenset({"fidelity", "utility"})
+
+
+class HierarchicalScorer:
+    """Family and composite scores exactly as the evaluation computes them.
+
+    Wraps :class:`metis.application.aggregator.Aggregator` through its public
+    constructor (``optimal_aggregators_path``) and ``aggregate`` so the tuner
+    and the calibration bounds use the same hierarchy, weights and risk
+    aversion as ``Aggregator.aggregate``.
+    """
+
+    def __init__(
+        self,
+        risk_aversion: float = DEFAULT_RISK_AVERSION,
+        weights: dict[str, float] | None = None,
+    ) -> None:
+        self.risk_aversion = float(risk_aversion)
+        self.weights = dict(weights) if weights else None
+        self._aggregators: dict[tuple, Any] = {}
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any] | None) -> HierarchicalScorer:
+        agg_cfg = (config or {}).get("aggregation") or {}
+        return cls(agg_cfg.get("risk_aversion", DEFAULT_RISK_AVERSION), agg_cfg.get("weights"))
+
+    def _aggregator(self, optimal: dict[str, str]):
+        key = tuple(sorted(optimal.items()))
+        agg = self._aggregators.get(key)
+        if agg is None:
+            from metis.application.aggregator import Aggregator
+
+            with tempfile.TemporaryDirectory(prefix="metis_tuner_") as tmp:
+                path = Path(tmp) / "aggregators.json"
+                path.write_text(json.dumps({"optimal": optimal}), encoding="utf-8")
+                agg = Aggregator(
+                    risk_aversion=self.risk_aversion, optimal_aggregators_path=str(path)
+                )
+            self._aggregators[key] = agg
+        return agg
+
+    def aggregate(
+        self,
+        values_by_family: dict[str, dict[str, float]],
+        optimal: dict[str, str],
+        *,
+        family_weights: bool = True,
+    ) -> dict[str, Any]:
+        """``Aggregator.aggregate`` on one iteration's ``{family: {metric_id: value}}``."""
+        from metis.domain.entities import EvalPlan, MetricResult
+
+        results = [
+            MetricResult(id=mid, value=float(v), details={}, family=family)
+            for family, values in values_by_family.items()
+            for mid, v in values.items()
+        ]
+        if not results:
+            return {}
+        plan = EvalPlan(metric_ids=[r.id for r in results])
+        weights = self._weights_for(values_by_family, family_weights)
+        return self._aggregator(optimal).aggregate(results, plan, weights)
+
+    def _weights_for(
+        self, values_by_family: dict[str, dict[str, float]], family_weights: bool
+    ) -> dict | None:
+        """Configured weights for the families present.
+
+        Category weights (``family.category``) shape the family score; family
+        weights only the composite, so they are left out when scoring a
+        single family (a family weighted 0 would make the composite fail).
+        """
+        if not self.weights:
+            return None
+        present = set(values_by_family)
+        kept = {}
+        for key, w in self.weights.items():
+            family, _, category = str(key).partition(".")
+            if family in present and (category or family_weights):
+                kept[key] = w
+        return kept or None
+
+    def family_score(self, family: str, values: dict[str, float], agg_name: str) -> float:
+        aggregates = self.aggregate(
+            {family: values}, {family: agg_name, "composite": "mean"}, family_weights=False
+        )
+        return float(aggregates.get(f"{family}_score", float("nan")))
 
 
 class AggregatorTuner:
@@ -31,20 +132,26 @@ class AggregatorTuner:
     represents theoretical bounds for each family.
     """
 
-    def __init__(self, logger: logging.Logger | None = None):
+    def __init__(
+        self,
+        logger: logging.Logger | None = None,
+        scorer: HierarchicalScorer | None = None,
+    ):
         self.logger = logger or logging.getLogger(__name__)
         self.aggregation_functions = AGGREGATION_FUNCTIONS
+        self.scorer = scorer or HierarchicalScorer()
         self.results: dict[str, Any] = {}
 
         # Early stopping tolerance
         self.early_stop_tol = 1e-6
 
-        # Available aggregators for per-family optimisation
+        # Available aggregators for per-family optimisation.  ``fsd`` is not a
+        # candidate: ``fsd_score_for_row`` is the arithmetic mean, so it tied
+        # with ``mean`` on every input and the strict ``<`` never let it win.
         self.available_aggregators = [
             "mean",
             "median",
             "trimmed_mean_10",
-            "fsd",
             "ssd",
         ]
 
@@ -54,7 +161,6 @@ class AggregatorTuner:
             "mean",
             "median",
             "trimmed_mean_10",
-            "fsd",
             "ssd",
         ]
 
@@ -196,22 +302,28 @@ class AggregatorTuner:
         best_error = float("inf")
 
         for agg_name in self.available_aggregators:
-            agg_func = self.aggregation_functions[agg_name]
-
             try:
-                upper_scores = [float(agg_func(list(vals.values()))) for vals in upper_iters]
-                lower_scores = [float(agg_func(list(vals.values()))) for vals in lower_iters]
-            except Exception as e:
-                self.logger.debug("Aggregator %s skipped (family tuning): %s", agg_name, e)
+                upper_scores = [
+                    self.scorer.family_score(family, vals, agg_name) for vals in upper_iters
+                ]
+                lower_scores = [
+                    self.scorer.family_score(family, vals, agg_name) for vals in lower_iters
+                ]
+            except Exception as exc:  # noqa: BLE001 - a candidate that fails is skipped
+                self.logger.warning("    %15s: failed (%s)", agg_name, exc)
                 continue
 
-            upper_mean = float(np.mean(upper_scores))
-            lower_mean = float(np.mean(lower_scores))
+            upper_mean = float(np.nanmean(upper_scores)) if upper_scores else float("nan")
+            lower_mean = float(np.nanmean(lower_scores)) if lower_scores else float("nan")
+            if not (np.isfinite(upper_mean) and np.isfinite(lower_mean)):
+                continue
 
-            # Orientation-agnostic: try both, keep the lower error
             error_normal = (upper_mean - 1.0) ** 2 + (lower_mean - 0.0) ** 2
-            error_invert = (upper_mean - 0.0) ** 2 + (lower_mean - 1.0) ** 2
-            error = min(error_normal, error_invert)
+            if family in _KNOWN_ORIENTATION_FAMILIES:
+                error = error_normal
+            else:
+                error_invert = (upper_mean - 0.0) ** 2 + (lower_mean - 1.0) ** 2
+                error = min(error_normal, error_invert)
 
             self.logger.info(
                 "    %15s: upper_mean=%.4f lower_mean=%.4f err=%.6f",
@@ -243,21 +355,13 @@ class AggregatorTuner:
         the composite candidate combines those family scores.
         """
         families = sorted(f for f in family_aggs if f != "composite")
+        if not families:
+            return "ssd"
         n_upper = min(len(upper_metric_data[f]) for f in families)
         n_lower = min(len(lower_metric_data[f]) for f in families)
 
-        # Pre-compute per-family scores with the tuned per-family aggregators
-        upper_family_scores: dict[str, list[float]] = {}
-        lower_family_scores: dict[str, list[float]] = {}
-
-        for family in families:
-            fam_agg = self.aggregation_functions[family_aggs[family]]
-            upper_family_scores[family] = [
-                float(fam_agg(list(upper_metric_data[family][i].values()))) for i in range(n_upper)
-            ]
-            lower_family_scores[family] = [
-                float(fam_agg(list(lower_metric_data[family][i].values()))) for i in range(n_lower)
-            ]
+        def _iteration(data, i):
+            return {f: data[f][i] for f in families}
 
         best_name = "ssd"
         best_error = float("inf")
@@ -280,22 +384,32 @@ class AggregatorTuner:
             candidate_names = list(self.composite_aggregators)
 
         for comp_name in candidate_names:
-            comp_func = self.aggregation_functions[comp_name]
+            optimal = {**{f: family_aggs[f] for f in families}, "composite": comp_name}
             try:
                 upper_composites = [
-                    float(comp_func([upper_family_scores[f][i] for f in families]))
+                    float(
+                        self.scorer.aggregate(_iteration(upper_metric_data, i), optimal).get(
+                            "composite_score", float("nan")
+                        )
+                    )
                     for i in range(n_upper)
                 ]
                 lower_composites = [
-                    float(comp_func([lower_family_scores[f][i] for f in families]))
+                    float(
+                        self.scorer.aggregate(_iteration(lower_metric_data, i), optimal).get(
+                            "composite_score", float("nan")
+                        )
+                    )
                     for i in range(n_lower)
                 ]
-            except Exception as e:
-                self.logger.debug("Aggregator %s skipped (composite tuning): %s", comp_name, e)
+            except Exception as exc:  # noqa: BLE001 - a candidate that fails is skipped
+                self.logger.warning("    composite %15s: failed (%s)", comp_name, exc)
                 continue
 
-            upper_mean = float(np.mean(upper_composites))
-            lower_mean = float(np.mean(lower_composites))
+            upper_mean = float(np.nanmean(upper_composites))
+            lower_mean = float(np.nanmean(lower_composites))
+            if not (np.isfinite(upper_mean) and np.isfinite(lower_mean)):
+                continue
 
             error_normal = (upper_mean - 1.0) ** 2 + (lower_mean - 0.0) ** 2
             error_invert = (upper_mean - 0.0) ** 2 + (lower_mean - 1.0) ** 2
@@ -327,21 +441,27 @@ class AggregatorTuner:
     def reaggregate(
         metric_data: dict[str, list[dict[str, float]]],
         family_aggs: dict[str, str],
+        scorer: HierarchicalScorer | None = None,
     ) -> dict[str, list[float]]:
         """Re-aggregate per-metric data with specific aggregators.
+
+        Family scores come from the evaluation's hierarchical ``Aggregator``
+        (see :class:`HierarchicalScorer`), so the calibration bounds are on
+        the same scale as the scores they normalise.
 
         Args:
             metric_data: ``{family: [{metric_id: value, ...}, ...]}``
             family_aggs: ``{family: aggregator_name}``
+            scorer: Weights / risk aversion of the evaluation (default: none / 5).
 
         Returns:
             ``{family: [score_iter1, score_iter2, ...]}``
         """
+        scorer = scorer or HierarchicalScorer()
         results: dict[str, list[float]] = {}
         for family, iterations in metric_data.items():
             agg_name = family_aggs.get(family, "median")
-            agg_func = AGGREGATION_FUNCTIONS[agg_name]
-            results[family] = [float(agg_func(list(vals.values()))) for vals in iterations]
+            results[family] = [scorer.family_score(family, vals, agg_name) for vals in iterations]
         return results
 
     # -----------------------------------------------------------------
@@ -415,15 +535,13 @@ class AggregatorTuner:
             try:
                 upper_agg = agg_func(upper_values)
                 upper_error = (upper_agg - target_upper) ** 2
-            except Exception as e:
-                self.logger.debug("Aggregator %s upper error failed: %s", agg_name, e)
+            except Exception:
                 upper_error = float("inf")
 
             try:
                 lower_agg = agg_func(lower_values)
                 lower_error = (lower_agg - target_lower) ** 2
-            except Exception as e:
-                self.logger.debug("Aggregator %s lower error failed: %s", agg_name, e)
+            except Exception:
                 lower_error = float("inf")
 
             total_error = upper_error + lower_error

@@ -38,15 +38,14 @@ def extract_column_types(schema: dict[str, Any]) -> dict[str, Any]:
 
         if col_type in EXCLUDED_SCHEMA_TYPES:
             id_columns.append(col_name)
-        elif col_type in ("categorical", "boolean", "text", "code_numeric"):
+        elif col_type == "nominal":
             categorical.append(col_name)
         elif col_type == "ordinal":
             ordinal[col_name] = levels
-        elif col_type in ("continuous", "discrete", "datetime", "geospatial"):
+        elif col_type in ("continuous", "discrete"):
             continuous.append(col_name)
         else:
-            # Unknown type — default to continuous
-            continuous.append(col_name)
+            raise ValueError(f"Column '{col_name}': unknown type '{col_type}'")
 
     _logger.info(
         "Extracted column types: %d categorical, %d ordinal, %d continuous, %d id",
@@ -73,6 +72,8 @@ def filter_schema_columns(schema: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Filtered schema dict containing only evaluable columns.
     """
+    if schema == "auto":  # resolved on the real table by each evaluation
+        return schema
     filtered = {}
     for col, spec in schema.items():
         col_type = spec if isinstance(spec, str) else spec.get("type", "")

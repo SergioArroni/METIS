@@ -12,6 +12,7 @@ from typing import Any
 
 from ...domain.contracts import BoundsStorage
 from ...domain.entities import EvalPlan, MetricResult
+from ...infrastructure.metrics.aggregation.stochastic_dominance import DEFAULT_RISK_AVERSION
 from ...infrastructure.runtime.logging import get_logger
 from ..aggregator import Aggregator
 
@@ -43,7 +44,7 @@ class ResultAggregator:
         agg_cfg = config.get("aggregation", {})
         cal_cfg = config.get("calibration", {})
 
-        risk_aversion = agg_cfg.get("risk_aversion", 5.0)
+        risk_aversion = agg_cfg.get("risk_aversion", DEFAULT_RISK_AVERSION)
         weights = agg_cfg.get("weights")
 
         # Resolve calibration bounds: prefer injected, then config path

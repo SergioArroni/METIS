@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "A modular framework for evaluating synthetic tabular data quality, utility, and privacy preservation"
 readme = { file = "README.md", content-type = "text/markdown" }
 license = "MIT"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 authors = [{ name = "Sergio Arroni", email = "sergioarroni@outlook.com" }]
 keywords = [
     "synthetic-data",
@@ -25,41 +25,40 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Information Analysis",
     "Typing :: Typed",
 ]
 
 dependencies = [
-    "numpy>=2.4.0",
-    "pandas>=2.3.3",
-    "scipy>=1.16.3",
-    "scikit-learn>=1.5.2",
+    "numpy>=2.5.5",
+    "pandas>=2.3.3",  # sdv and smartnoise-synth still cap pandas below 3
+    "scipy>=1.18.1",
+    "scikit-learn>=1.9.1",
     "pyyaml>=6.0.3",
-    "click>=8.3.1",
-    "rich>=14.2.0",
-    "imbalanced-learn>=0.12.4",
-    "sdv>=1.32.0",
-    "pgmpy>=0.1.26",
-    "scikit-posthocs>=0.11.4",
-    "matplotlib>=3.10.0",
-    "seaborn>=0.13.2",
-    "torch>=2.9.1",
-    "smartnoise-synth>=1.0.6",
+    # Utility metrics (CatBoost trainer) are imported by the metric registry:
+    # without it ``import metis`` fails, and CI installs ``.[ci]`` only.
+    "catboost>=1.2.10",
+    # Generators of the benchmark (metis.sota_models): SDV 2 (CTGAN, TVAE,
+    # Gaussian copula), pgmpy (Bayesian network), smartnoise (DP-CTGAN), torch.
+    "sdv>=2.2.0",
+    "pgmpy>=1.1.2",
+    "smartnoise-synth>=1.0.8",
+    "torch>=2.15.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.0.2",
-    "pytest-cov>=7.0.0",
-    "ruff>=0.14.10",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.5",
     "pre-commit>=4.5.1",
-    "mypy>=1.7.0",
-    "hypothesis>=6.0.0",
+    "mypy>=2.4.1",
 ]
-ci = ["pytest>=9.0.2", "pytest-cov>=7.0.0", "ruff>=0.14.10", "hypothesis>=6.0.0"]
-ml = ["catboost>=1.2.8", "xgboost>=3.1.2", "lightgbm>=4.6.0", "optuna>=3.4.0"]
+ci = ["pytest>=9.2.0", "pytest-cov>=7.1.0", "ruff>=0.17.5"]
+ml = ["catboost>=1.2.10", "xgboost>=3.4.1", "lightgbm>=4.7.0"]
+diffusion = ["synthcity>=0.2.12"]
 docs = ["mkdocs-material>=9.0", "mkdocs-minify-plugin>=0.7"]
 all = ["metis-val[dev,ml]"]
 
@@ -78,16 +77,30 @@ pattern = "__version__\\s*=\\s*[\"'](?P<version>[^\"']+)[\"']"
 
 [tool.hatch.build.targets.wheel]
 packages = ["metis"]
+# Local run outputs, not package data: calibration cache files and benchmark
+# results live inside the source tree but must not ship in the wheel.
+exclude = [
+    "metis/calibrate/cache/*.json",
+    "metis/sota_models/results/**",
+]
 
 [tool.hatch.build.targets.sdist]
 include = ["/metis", "/version.py", "/README.md", "/LICENSE"]
-exclude = ["paper/", "scripts/", "data/", "catboost_info/", "build/"]
+exclude = [
+    "paper/",
+    "scripts/",
+    "data/",
+    "catboost_info/",
+    "build/",
+    "/metis/calibrate/cache/*.json",
+    "/metis/sota_models/results/",
+]
 
 # ============================================
 # Ruff Configuration
 # ============================================
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 100 # Más razonable que 120
 exclude = [
     ".git",
@@ -130,8 +143,6 @@ ignore = [
     "PLR0915", # too many statements
     "ERA001",  # commented code (permitir comentarios)
     "SIM108",  # use ternary operator (puede reducir legibilidad)
-    "PLC0415", # import-outside-top-level (intentional: lazy optional deps, circular-import guards)
-    "UP046",   # non-pep695-generic-class (PEP 695 generics are more disruptive to adopt wholesale)
 ]
 # Autofix seguro
 fixable = ["ALL"]
@@ -172,9 +183,10 @@ python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = ["-v", "--tb=short", "-ra"]
+# A deprecation raised from METIS code fails the test; those inside other libraries are shown.
 filterwarnings = [
-    "ignore::DeprecationWarning",
-    "ignore::PendingDeprecationWarning",
+    "error::DeprecationWarning:metis.*",
+    "error::FutureWarning:metis.*",
 ]
 
 # ============================================
@@ -206,7 +218,7 @@ directory = "htmlcov"
 # MyPy Configuration
 # ============================================
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
